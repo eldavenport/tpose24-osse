@@ -1,0 +1,35 @@
+{
+  "name": "rect_x1.0",
+  "description": "Rectangle: 2 equatorial gliders at 0N lon+-1.0deg, 4 corners at lat+-2.0deg same longitudes",
+  "center": {
+    "lat": 0.0,
+    "lon": 220.0
+  },
+  "x_deg": 1.0,
+  "positions": [
+    [
+      0.0,
+      219.0
+    ],
+    [
+      0.0,
+      221.0
+    ],
+    [
+      -2.0,
+      219.0
+    ],
+    [
+      -2.0,
+      221.0
+    ],
+    [
+      2.0,
+      219.0
+    ],
+    [
+      2.0,
+      221.0
+    ]
+  ]
+}

@@ -10,6 +10,7 @@ Typical workflow:
     fig2      = plot_velocity_map(ds, positions, max_depth=70)
 """
 
+import json
 import numpy as np
 import xarray as xr
 import matplotlib.pyplot as plt
@@ -17,6 +18,19 @@ import matplotlib.gridspec as gridspec
 import matplotlib.dates as mdates
 import cmocean.cm as cmo
 from xmitgcm import open_mdsdataset
+
+
+def load_positions(path):
+    """
+    Load glider positions from a JSON config file.
+
+    Returns
+    -------
+    list of (lat, lon) tuples
+    """
+    with open(path) as f:
+        cfg = json.load(f)
+    return [tuple(p) for p in cfg['positions']]
 
 
 def load_model(run_dir, iters, ref_date='2012-10-01', delta_t=300):
@@ -73,7 +87,7 @@ def sample_uv(ds, positions, max_depth=70, dz_obs=2):
     return xr.Dataset({'U': U, 'V': V}).assign_coords(lat=lat_da, lon=lon_da)
 
 
-def compute_w_planefit(uv_samples):
+def compute_w_planefit(uv_samples, remove_barotropic=False):
     """
     Estimate w via plane fit to U and V across the array, then integrate divergence.
 
@@ -86,15 +100,17 @@ def compute_w_planefit(uv_samples):
     Parameters
     ----------
     uv_samples : xr.Dataset
-        From sample_uv, dims (time, glider, depth).
+        From sample_uv, dims (time, glider, obs_depth).
+    remove_barotropic : bool
+        If True, subtract the depth-mean from U and V at each glider and timestep
+        before the plane fit, so the result estimates the baroclinic w only.
 
     Returns
     -------
     xr.Dataset with:
         w_est : (time, depth)  estimated w at layer interfaces [m/s]
                                depth coordinate = [0, -dz, -2*dz, ..., -max_depth]
-        div   : (time, depth)  horizontal divergence at obs midpoints [1/s]
-                               depth coordinate matches uv_samples
+        div   : (time, obs_depth)  horizontal divergence at obs midpoints [1/s]
     """
     lats = uv_samples.lat.values
     lons = uv_samples.lon.values
@@ -112,6 +128,11 @@ def compute_w_planefit(uv_samples):
     U = uv['U'].values  # (ntime, nglider, n_obs)
     V = uv['V'].values
     ntime, nglider, n_obs = U.shape
+
+    if remove_barotropic:
+        # Subtract depth-mean at each glider and timestep before fitting
+        U = U - U.mean(axis=2, keepdims=True)
+        V = V - V.mean(axis=2, keepdims=True)
 
     # Transpose to (nglider, ntime, n_obs) then flatten for a single matrix multiply
     cu = Ainv @ U.transpose(1, 0, 2).reshape(nglider, ntime * n_obs)  # (3, ntime*n_obs)
@@ -142,7 +163,7 @@ def compute_w_planefit(uv_samples):
     return xr.Dataset({'w_est': w_est_da, 'div': div_da})
 
 
-def sample_model_w(ds, positions, max_depth=70, dz_obs=2):
+def sample_model_w(ds, positions, max_depth=70, dz_obs=2, remove_barotropic=False):
     """
     Sample WVEL at the centroid of the glider array, interpolated to the same
     interface depths as compute_w_planefit.
@@ -155,6 +176,9 @@ def sample_model_w(ds, positions, max_depth=70, dz_obs=2):
         Must match the value used in sample_uv. Default 70.
     dz_obs : float
         Must match the value used in sample_uv. Default 2.
+    remove_barotropic : bool
+        If True, subtract the depth-mean from the returned WVEL at each timestep,
+        consistent with compute_w_planefit(remove_barotropic=True).
 
     Returns
     -------
@@ -168,15 +192,24 @@ def sample_model_w(ds, positions, max_depth=70, dz_obs=2):
     lon_c = np.mean([p[1] for p in positions])
     w_z_da = xr.DataArray(w_z, dims='depth', coords={'depth': w_z})
 
-    return ds.WVEL.interp(XC=lon_c, YC=lat_c, Zl=w_z_da).compute()
+    w = ds.WVEL.interp(XC=lon_c, YC=lat_c, Zl=w_z_da).compute()
+    if remove_barotropic:
+        # Remove the linear barotropic trend: the component that takes w from 0
+        # at the surface to w(-H) at the bottom of the sampled layer.
+        # This is consistent with compute_w_planefit(remove_barotropic=True),
+        # which integrates div - <div>_z = d/dz[w - w(-H)/H * |z|].
+        w_bottom = w.isel(depth=-1)          # WVEL at z = -max_depth, shape (time,)
+        w = w + (w_bottom / max_depth) * w.depth   # w.depth is negative, so this subtracts
+    return w
 
 
-def plot_w_comparison(w_est, w_model, depth_range=None, time_range=None):
+def plot_w_comparison(w_est, w_model, depth_range=None, time_range=None, point_depth=-50):
     """
-    Five-panel comparison of estimated and model w.
+    Six-panel comparison of estimated and model w.
 
-    Top row: w_est Hovmöller | w_model Hovmöller | bias Hovmöller | depth profiles
-    Bottom row: depth-mean time series (spans first three columns)
+    Row 0: w_est Hovmöller | w_model Hovmöller | bias Hovmöller | depth profiles
+    Row 1: depth-mean time series with ±σ shading (spans first three columns)
+    Row 2: w and bias at point_depth vs time (spans first three columns)
 
     Parameters
     ----------
@@ -184,6 +217,8 @@ def plot_w_comparison(w_est, w_model, depth_range=None, time_range=None):
     w_model : xr.DataArray, dims (time, depth)
     depth_range : (z_shallow, z_deep) in model convention (e.g. (0, -50)), optional
     time_range : (t_start, t_end) as strings or datetimes, optional
+    point_depth : float
+        Depth for the bottom time series panel. Default -50.
 
     Returns
     -------
@@ -205,9 +240,14 @@ def plot_w_comparison(w_est, w_model, depth_range=None, time_range=None):
     bias_tmean    = bias.mean('time')
     bias_tstd     = bias.std('time')
 
-    w_est_dm    = w_est.mean('depth')
-    w_model_dm  = w_model.mean('depth')
-    bias_dm     = bias.mean('depth')
+    w_est_dm   = w_est.mean('depth')
+    w_model_dm = w_model.mean('depth')
+    bias_dm    = bias.mean('depth')
+
+    actual_depth = float(w_est.depth.sel(depth=point_depth, method='nearest'))
+    w_est_pt   = w_est.sel(depth=actual_depth, method='nearest')
+    w_model_pt = w_model.sel(depth=actual_depth, method='nearest')
+    bias_pt    = w_est_pt - w_model_pt
 
     T = w_est.time.values
     Z = w_est.depth.values
@@ -217,20 +257,21 @@ def plot_w_comparison(w_est, w_model, depth_range=None, time_range=None):
     ))
     vmax_bias = float(np.nanpercentile(np.abs(bias.values.ravel()), 98))
 
-    fig = plt.figure(figsize=(22, 10))
+    fig = plt.figure(figsize=(22, 13))
     gs = gridspec.GridSpec(
-        2, 4,
+        3, 4,
         width_ratios=[3, 3, 3, 2],
-        height_ratios=[3, 2],
-        hspace=0.38, wspace=0.32,
+        height_ratios=[3, 2, 2],
+        hspace=0.45, wspace=0.32,
     )
     ax_h1    = fig.add_subplot(gs[0, 0])
     ax_h2    = fig.add_subplot(gs[0, 1], sharey=ax_h1)
     ax_h3    = fig.add_subplot(gs[0, 2], sharey=ax_h1)
     ax_prof  = fig.add_subplot(gs[0, 3], sharey=ax_h1)
     ax_ts    = fig.add_subplot(gs[1, :3])
-    ax_blank = fig.add_subplot(gs[1, 3])
-    ax_blank.axis('off')
+    ax_ts2   = fig.add_subplot(gs[2, :3], sharex=ax_ts)
+    for ax in (fig.add_subplot(gs[1, 3]), fig.add_subplot(gs[2, 3])):
+        ax.axis('off')
 
     def _hovm(ax, data, cmap, vmax, title):
         im = ax.pcolormesh(T, Z, data.values.T, cmap=cmap,
@@ -275,9 +316,22 @@ def plot_w_comparison(w_est, w_model, depth_range=None, time_range=None):
     ax_ts.set_title('Depth-mean w and bias vs time  (shading = ±σ over depth)')
     ax_ts.legend(fontsize=9)
     ax_ts.grid(alpha=0.3)
-    ax_ts.xaxis.set_major_formatter(mdates.DateFormatter('%b %d'))
-    ax_ts.xaxis.set_major_locator(mdates.WeekdayLocator(byweekday=0, interval=2))
-    plt.setp(ax_ts.xaxis.get_majorticklabels(), rotation=30, ha='right')
+    plt.setp(ax_ts.get_xticklabels(), visible=False)
+
+    for data, color, label in [
+        (w_est_pt,   'C0', 'est'),
+        (w_model_pt, 'C1', 'model'),
+        (bias_pt,    'C2', 'bias'),
+    ]:
+        ax_ts2.plot(T, data.values, color=color, lw=1, label=label)
+    ax_ts2.axhline(0, color='k', lw=0.5, ls=':')
+    ax_ts2.set_ylabel(f'w at {abs(actual_depth):.0f} m (m s⁻¹)')
+    ax_ts2.set_title(f'w and bias at {abs(actual_depth):.0f} m depth vs time')
+    ax_ts2.legend(fontsize=9)
+    ax_ts2.grid(alpha=0.3)
+    ax_ts2.xaxis.set_major_formatter(mdates.DateFormatter('%b %d'))
+    ax_ts2.xaxis.set_major_locator(mdates.WeekdayLocator(byweekday=0, interval=2))
+    plt.setp(ax_ts2.xaxis.get_majorticklabels(), rotation=30, ha='right')
 
     return fig
 
@@ -308,6 +362,9 @@ def plot_velocity_map(ds, positions, max_depth=70, time_range=None):
 
     glider_lats = [p[0] for p in positions]
     glider_lons = [p[1] for p in positions]
+    buf = 0.25
+    lon_lim = (min(glider_lons) - buf, max(glider_lons) + buf)
+    lat_lim = (min(glider_lats) - buf, max(glider_lats) + buf)
 
     fig, axes = plt.subplots(1, 3, figsize=(18, 5))
 
@@ -323,6 +380,8 @@ def plot_velocity_map(ds, positions, max_depth=70, time_range=None):
                            vmin=-vmax, vmax=vmax, shading='auto')
         plt.colorbar(im, ax=ax, shrink=0.85, pad=0.02, label='m s⁻¹')
         ax.scatter(glider_lons, glider_lats, c='k', s=40, zorder=5, marker='o')
+        ax.set_xlim(*lon_lim)
+        ax.set_ylim(*lat_lim)
         ax.set_xlabel('Longitude (°E)')
         ax.set_ylabel('Latitude (°N)')
         ax.set_title(title)
