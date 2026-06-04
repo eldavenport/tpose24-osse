@@ -1,0 +1,6 @@
+*.claude
+osse_tools_plan.md
+**.nc
+**.mat
+**.cdf
+**__pycache*
