@@ -163,10 +163,29 @@ def compute_w_planefit(uv_samples, remove_barotropic=False):
     return xr.Dataset({'w_est': w_est_da, 'div': div_da})
 
 
-def sample_model_w(ds, positions, max_depth=70, dz_obs=2, remove_barotropic=False):
+def _convex_hull_mask(xc_vals, yc_vals, positions):
     """
-    Sample WVEL at the centroid of the glider array, interpolated to the same
-    interface depths as compute_w_planefit.
+    Boolean mask (nYC, nXC) — True for model grid points inside the convex hull
+    of positions. Uses scipy ConvexHull + matplotlib Path; no shapely required.
+    """
+    from scipy.spatial import ConvexHull
+    from matplotlib.path import Path
+
+    pts = np.array([[p[1], p[0]] for p in positions])  # (lon, lat) ordering for Path
+    hull = ConvexHull(pts)
+    path = Path(pts[hull.vertices])
+
+    XC, YC = np.meshgrid(xc_vals, yc_vals)
+    inside = path.contains_points(
+        np.column_stack([XC.ravel(), YC.ravel()])
+    ).reshape(XC.shape)
+    return inside  # (nYC, nXC) numpy bool
+
+
+def sample_model_w(ds, positions, max_depth=70, dz_obs=2,
+                   remove_barotropic=False, spatial_mean=False):
+    """
+    Sample WVEL interpolated to the interface depths of compute_w_planefit.
 
     Parameters
     ----------
@@ -177,8 +196,11 @@ def sample_model_w(ds, positions, max_depth=70, dz_obs=2, remove_barotropic=Fals
     dz_obs : float
         Must match the value used in sample_uv. Default 2.
     remove_barotropic : bool
-        If True, subtract the depth-mean from the returned WVEL at each timestep,
-        consistent with compute_w_planefit(remove_barotropic=True).
+        If True, subtract the linear barotropic trend from the returned w.
+    spatial_mean : bool
+        If False (default), return WVEL at the array centroid.
+        If True, return WVEL averaged over all model grid points inside the
+        convex hull of positions — the area-mean w that the plane fit estimates.
 
     Returns
     -------
@@ -186,20 +208,44 @@ def sample_model_w(ds, positions, max_depth=70, dz_obs=2, remove_barotropic=Fals
         depth coordinate = [0, -dz_obs, ..., -max_depth]
     """
     n = int(max_depth / dz_obs)
-    w_z = -np.arange(n + 1) * dz_obs  # interface depths matching compute_w_planefit
-
-    lat_c = np.mean([p[0] for p in positions])
-    lon_c = np.mean([p[1] for p in positions])
+    w_z = -np.arange(n + 1) * dz_obs
     w_z_da = xr.DataArray(w_z, dims='depth', coords={'depth': w_z})
 
-    w = ds.WVEL.interp(XC=lon_c, YC=lat_c, Zl=w_z_da).compute()
+    if spatial_mean:
+        # Restrict to bounding box first so we only load a small region of WVEL
+        buf = 3 / 24  # 3-cell buffer (1/24 deg grid)
+        lat_min = min(p[0] for p in positions) - buf
+        lat_max = max(p[0] for p in positions) + buf
+        lon_min = min(p[1] for p in positions) - buf
+        lon_max = max(p[1] for p in positions) + buf
+
+        w_sub = ds.WVEL.sel(
+            XC=slice(lon_min, lon_max),
+            YC=slice(lat_min, lat_max),
+        ).interp(Zl=w_z_da)
+
+        xc_sub = ds.XC.sel(XC=slice(lon_min, lon_max)).values
+        yc_sub = ds.YC.sel(YC=slice(lat_min, lat_max)).values
+        mask_np = _convex_hull_mask(xc_sub, yc_sub, positions)
+
+        n_pts = int(mask_np.sum())
+        print(f'  area mean over {n_pts} model grid points')
+
+        mask_da = xr.DataArray(mask_np, dims=['YC', 'XC'],
+                               coords={'YC': yc_sub, 'XC': xc_sub})
+        w = w_sub.where(mask_da).mean(['XC', 'YC']).compute()
+    else:
+        lat_c = np.mean([p[0] for p in positions])
+        lon_c = np.mean([p[1] for p in positions])
+        w = ds.WVEL.interp(XC=lon_c, YC=lat_c, Zl=w_z_da).compute()
+
     if remove_barotropic:
         # Remove the linear barotropic trend: the component that takes w from 0
         # at the surface to w(-H) at the bottom of the sampled layer.
         # This is consistent with compute_w_planefit(remove_barotropic=True),
         # which integrates div - <div>_z = d/dz[w - w(-H)/H * |z|].
-        w_bottom = w.isel(depth=-1)          # WVEL at z = -max_depth, shape (time,)
-        w = w + (w_bottom / max_depth) * w.depth   # w.depth is negative, so this subtracts
+        w_bottom = w.isel(depth=-1)
+        w = w + (w_bottom / max_depth) * w.depth
     return w
 
 

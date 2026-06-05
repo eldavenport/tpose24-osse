@@ -1,0 +1,35 @@
+{
+  "name": "wide_hex_d1.0",
+  "description": "Wide hexagon (2x zonal): diameter 1.0\u00b0 meridional, 2.0\u00b0 zonal. Lon offsets 2x standard hexagon of same diameter.",
+  "center": {
+    "lat": 0.0,
+    "lon": 220.0
+  },
+  "diameter_deg": 1.0,
+  "positions": [
+    [
+      0.0,
+      221.0
+    ],
+    [
+      0.433013,
+      220.5
+    ],
+    [
+      0.433013,
+      219.5
+    ],
+    [
+      0.0,
+      219.0
+    ],
+    [
+      -0.433013,
+      219.5
+    ],
+    [
+      -0.433013,
+      220.5
+    ]
+  ]
+}
