@@ -17,7 +17,8 @@ import matplotlib.pyplot as plt
 from osse_tools import (load_model, load_positions, sample_fields, model_region,
                         add_density, eddy_anomalies, compute_w_planefit,
                         model_divergence, dist_stats, plot_field_pdfs,
-                        plot_joint_compare, plot_pdf_compare)
+                        plot_joint_compare, plot_pdf_compare,
+                        array_vertical_flux, model_vertical_flux, plot_flux_compare)
 
 RUN_DIR = '/data/SO3/edavenport/tpose24/oct2012_3month_transp_cons'
 ITERS = list(range(36, 26173, 36))
@@ -34,7 +35,11 @@ def main(cfg_file, max_depth, tstep):
     ds = ds.isel(time=slice(None, None, tstep))
 
     obs = eddy_anomalies(add_density(sample_fields(ds, positions, max_depth=max_depth))).compute()
-    true = eddy_anomalies(add_density(model_region(ds, positions, max_depth=max_depth))).compute()
+    true = eddy_anomalies(add_density(model_region(
+        ds, positions, vars=('WVEL', 'UVEL', 'VVEL', 'THETA', 'SALT'),
+        max_depth=max_depth))).compute()
+    wpf = compute_w_planefit(
+        sample_fields(ds, positions, vars=('UVEL', 'VVEL'), max_depth=max_depth))
 
     fig = plot_field_pdfs(obs, true)
     fig.suptitle(f'{name}: field PDFs  (0-{max_depth} m)', y=1.01)
@@ -54,9 +59,16 @@ def main(cfg_file, max_depth, tstep):
         fig.savefig(f'{outdir}/joint_{tag}.png', dpi=150, bbox_inches='tight')
         plt.close(fig)
 
+    # vertical eddy fluxes: true total vs glider estimate
+    af = array_vertical_flux(wpf['w_est'], obs)
+    flux_total = model_vertical_flux(true)
+    fig = plot_flux_compare(af, flux_total)
+    fig.suptitle(f'{name}: vertical eddy fluxes  (0-{max_depth} m)', y=1.02)
+    fig.savefig(f'{outdir}/vertical_fluxes.png', dpi=150, bbox_inches='tight')
+    plt.close(fig)
+
     # divergence: plane-fit estimate vs true area mean
-    div_obs = compute_w_planefit(
-        sample_fields(ds, positions, vars=('UVEL', 'VVEL'), max_depth=max_depth))['div']
+    div_obs = wpf['div']
     div_true = model_divergence(ds, positions, max_depth=max_depth)
     fig = plot_pdf_compare(div_obs, div_true, label='divergence', units='1/s')
     fig.suptitle(f'{name}: horizontal divergence', y=1.02)
@@ -70,6 +82,16 @@ def main(cfg_file, max_depth, tstep):
     for v in ('T', 'S', 'U', 'V', 'sigma0'):
         stats['fields'][v] = dist_stats(obs[v], true[v])
     stats['fields']['divergence'] = dist_stats(div_obs, div_true)
+
+    stats['flux'] = {}
+    z = af['wT'].obs_depth.values
+    for k in ('wT', 'wS', 'wU', 'wV'):
+        itot = float(np.trapz(flux_total[k].values, z))
+        iest = float(np.trapz(af[k].values, z))
+        stats['flux'][k] = {
+            'total_integral': itot, 'glider_integral': iest,
+            'recovered_frac': iest / itot if itot != 0 else None,
+        }
     with open(f'{outdir}/stats.json', 'w') as f:
         json.dump(stats, f, indent=1, default=float)
 

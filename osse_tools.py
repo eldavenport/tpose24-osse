@@ -25,10 +25,11 @@ import matplotlib.dates as mdates
 import cmocean.cm as cmo
 from xmitgcm import open_mdsdataset
 
-# MITgcm C-grid stagger of each diagnostic, and a short alias for it
+# MITgcm C-grid stagger of each diagnostic, its vertical coord, and a short alias
 _GRID   = {'UVEL': ('XG', 'YC'), 'VVEL': ('XC', 'YG'),
-           'THETA': ('XC', 'YC'), 'SALT': ('XC', 'YC')}
-_RENAME = {'UVEL': 'U', 'VVEL': 'V', 'THETA': 'T', 'SALT': 'S'}
+           'THETA': ('XC', 'YC'), 'SALT': ('XC', 'YC'), 'WVEL': ('XC', 'YC')}
+_ZCOORD = {'WVEL': 'Zl'}  # default 'Z' (cell centres); WVEL on Zl (interfaces)
+_RENAME = {'UVEL': 'U', 'VVEL': 'V', 'THETA': 'T', 'SALT': 'S', 'WVEL': 'W'}
 
 
 def load_positions(path):
@@ -114,7 +115,7 @@ def sample_fields(ds, positions, vars=('UVEL', 'VVEL', 'THETA', 'SALT'),
     out = {}
     for v in vars:
         gx, gy = _GRID[v]
-        out[_RENAME[v]] = ds[v].interp({gx: lon_da, gy: lat_da, 'Z': obs_z_da}) \
+        out[_RENAME[v]] = ds[v].interp({gx: lon_da, gy: lat_da, _ZCOORD.get(v, 'Z'): obs_z_da}) \
                                .transpose('time', 'glider', 'obs_depth')
     return xr.Dataset(out).assign_coords(lat=lat_da, lon=lon_da)
 
@@ -148,7 +149,7 @@ def model_region(ds, positions, vars=('UVEL', 'VVEL', 'THETA', 'SALT'),
     out = {}
     for v in vars:
         gx, gy = _GRID[v]
-        da = ds[v].interp({gx: xt, gy: yt, 'Z': obs_z_da})
+        da = ds[v].interp({gx: xt, gy: yt, _ZCOORD.get(v, 'Z'): obs_z_da})
         # drop MITgcm grid coords (hFac, dxG, ...) that carry the now-unused stagger dims
         da = da.drop_vars([c for c in da.coords if c not in keep])
         out[_RENAME[v]] = da.where(mask)
@@ -341,6 +342,65 @@ def model_divergence(ds, positions, max_depth=70, dz_obs=2):
            grid.diff(ds.VVEL * ds.dxG, 'Y', boundary='fill')) / ds.rA
     div = div.interp(Z=_obs_z(max_depth, dz_obs))
     return _hull_mean(div, positions).compute()
+
+
+def vertical_eddy_flux(w, tracers, mean_dim='time'):
+    """
+    Vertical eddy flux <w' phi'> over mean_dim for each tracer present (U,V,T,S).
+
+    w and tracers must share dims and depth grid; primes are deviations from the
+    mean over mean_dim. Returns a Dataset with wU, wV, wT, wS as available.
+    """
+    wp = w - w.mean(mean_dim)
+    out = {}
+    for v in ('U', 'V', 'T', 'S'):
+        if v in tracers:
+            out['w' + v] = (wp * (tracers[v] - tracers[v].mean(mean_dim))).mean(mean_dim)
+    return xr.Dataset(out)
+
+
+def array_vertical_flux(w_est, fields, mean_dim='time'):
+    """
+    Array-estimated vertical eddy flux: plane-fit w_est paired with the array-mean
+    tracers. w_est (on interfaces) is interpolated to the tracer obs depths.
+
+    Returns Dataset of flux profiles (obs_depth).
+    """
+    z = fields.obs_depth.values
+    w = w_est.interp(depth=xr.DataArray(z, dims='obs_depth', coords={'obs_depth': z}))
+    return vertical_eddy_flux(w, fields.mean('glider'), mean_dim)
+
+
+def model_vertical_flux(region, mean_dim='time'):
+    """
+    True total vertical eddy flux profiles <w' phi'> over the hull, from a
+    model_region that includes WVEL: full eddy flux averaged over hull points and time.
+    """
+    return vertical_eddy_flux(region.W, region, mean_dim).mean('point')
+
+
+def plot_flux_compare(array_flux, model_total):
+    """
+    Vertical eddy flux profiles vs depth: true total (model) and glider estimate.
+
+    Each panel annotates the fraction of the depth-integrated flux the gliders recover,
+    i.e. how much of the true vertical transport survives this sampling.
+    """
+    panels = [('wT', "w'T' (m s⁻¹ °C)"), ('wS', "w'S' (m s⁻¹ g/kg)"),
+              ('wU', "w'u' (m² s⁻²)"),   ('wV', "w'v' (m² s⁻²)")]
+    fig, axes = plt.subplots(1, 4, figsize=(18, 5), sharey=True)
+    for ax, (k, lab) in zip(axes, panels):
+        z = array_flux[k].obs_depth.values
+        tot, est = model_total[k].values, array_flux[k].values
+        itot, iest = np.trapz(tot, z), np.trapz(est, z)
+        frac = iest / itot if itot != 0 else np.nan
+        ax.plot(tot, z, color='0.4', lw=2.5, label='model total')
+        ax.plot(est, z, 'C3-', lw=1.5, label='glider est')
+        ax.axvline(0, color='k', lw=0.5, ls=':')
+        ax.set_xlabel(lab); ax.set_title(f'recovered {frac:.0%}', fontsize=9)
+        ax.grid(alpha=0.3)
+    axes[0].set_ylabel('depth (m)'); axes[0].legend(fontsize=8)
+    return fig
 
 
 def _js_distance(sa, sb, edges):

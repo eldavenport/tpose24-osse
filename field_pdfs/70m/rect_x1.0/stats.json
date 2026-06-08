@@ -73,5 +73,31 @@
    "wasserstein": 8.754516320579517e-08,
    "js": 0.1673741686323723
   }
+ },
+ "flux": {
+  "wT": {
+   "array_dmean": 9.137704836030967e-07,
+   "areamean_dmean": 8.866580260384284e-07,
+   "total_dmean": 5.697491741538689e-06,
+   "r_array_areamean": 0.7477987214619422
+  },
+  "wS": {
+   "array_dmean": -1.9586590730119496e-07,
+   "areamean_dmean": -3.4411880526762593e-07,
+   "total_dmean": -1.1238721013640838e-06,
+   "r_array_areamean": 0.9654324026088765
+  },
+  "wU": {
+   "array_dmean": 2.2596205632957762e-07,
+   "areamean_dmean": -1.1514643631156508e-07,
+   "total_dmean": -9.4719563458488e-07,
+   "r_array_areamean": -0.3548866739476943
+  },
+  "wV": {
+   "array_dmean": -4.500699130045639e-07,
+   "areamean_dmean": 5.037961993549405e-08,
+   "total_dmean": -3.7861113530769754e-07,
+   "r_array_areamean": 0.5776665110711027
+  }
  }
 }
