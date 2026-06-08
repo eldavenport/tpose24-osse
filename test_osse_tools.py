@@ -87,20 +87,21 @@ def test_planefit_w_integration():
     print(f"  w integration: w at interface 5={w[0,5]:.2e}, expected={expected[5]:.2e}  OK")
 
 
-def test_sample_uv_shape():
-    """sample_uv output should have dims (time, glider, depth) at obs midpoints."""
-    from osse_tools import load_model, sample_uv
+def test_sample_fields_shape():
+    """sample_fields output should have dims (time, glider, obs_depth) with U,V,T,S."""
+    from osse_tools import load_model, sample_fields
 
     run_dir = '/data/SO3/edavenport/tpose24/oct2012_3month_transp_cons'
     ds = load_model(run_dir, iters=[36])
     positions = _hexagon_positions(0.0, 220.0, 0.125)
-    uv = sample_uv(ds, positions, max_depth=70, dz_obs=2)
+    uv = sample_fields(ds, positions, max_depth=70, dz_obs=2)
 
     assert uv['U'].dims == ('time', 'glider', 'obs_depth'), f"unexpected dims: {uv['U'].dims}"
+    assert set(uv.data_vars) == {'U', 'V', 'T', 'S'}, f"unexpected vars: {set(uv.data_vars)}"
     assert uv['U'].shape[1] == 6,  f"expected 6 gliders, got {uv['U'].shape[1]}"
     assert uv['U'].shape[2] == 35, f"expected 35 obs levels (70/2), got {uv['U'].shape[2]}"
     assert 'lat' in uv.coords and 'lon' in uv.coords
-    print(f"  sample_uv shape: {uv['U'].shape}  OK")
+    print(f"  sample_fields shape: {uv['U'].shape}, vars={set(uv.data_vars)}  OK")
 
 
 def test_sample_model_w_shape():
@@ -117,12 +118,32 @@ def test_sample_model_w_shape():
     print(f"  sample_model_w shape: {w_model.shape}  OK")
 
 
+def test_model_region_density_anomalies():
+    """model_region truth population, density, and anomalies build correctly."""
+    from osse_tools import load_model, model_region, add_density, eddy_anomalies
+
+    run_dir = '/data/SO3/edavenport/tpose24/oct2012_3month_transp_cons'
+    ds = load_model(run_dir, iters=[36])
+    positions = _hexagon_positions(0.0, 220.0, 0.125)
+    reg = model_region(ds, positions, max_depth=20, dz_obs=2)
+
+    assert reg['T'].dims == ('time', 'point', 'obs_depth'), f"unexpected dims: {reg['T'].dims}"
+    assert 'lat' in reg.coords and 'lon' in reg.coords
+    reg = eddy_anomalies(add_density(reg))
+    assert 'sigma0' in reg and 'Tp' in reg and 'Vp' in reg
+    sig = reg['sigma0'].values
+    assert np.nanmin(sig) > 15 and np.nanmax(sig) < 30, f"sigma0 out of range: {np.nanmin(sig)}-{np.nanmax(sig)}"
+    print(f"  model_region {reg['T'].shape}, sigma0 in "
+          f"[{np.nanmin(sig):.1f}, {np.nanmax(sig):.1f}]  OK")
+
+
 if __name__ == '__main__':
     tests = [
         test_planefit_div_recovery,
         test_planefit_w_integration,
-        test_sample_uv_shape,
+        test_sample_fields_shape,
         test_sample_model_w_shape,
+        test_model_region_density_anomalies,
     ]
     failed = 0
     for t in tests:
