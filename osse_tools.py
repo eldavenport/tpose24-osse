@@ -206,8 +206,7 @@ def compute_w_planefit(uv_samples, remove_barotropic=False):
     Notes
     -----
     Positions are projected onto a flat plane via _latlon_to_m (flat-Earth approximation).
-    Error grows with array extent; significant beyond ~50 km.
-    w=0 is assumed at the surface. This breaks near steep topography or strong surface convergence.
+    w=0 is assumed at the surface.
     """
     lats = uv_samples.lat.values
     lons = uv_samples.lon.values
