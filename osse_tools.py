@@ -129,7 +129,7 @@ def model_region(ds, positions, vars=('UVEL', 'VVEL', 'THETA', 'SALT'),
     and to the obs depths, then masked to the convex hull of positions and stacked
     over the horizontal points. Compare its distribution against sample_fields output.
 
-    For a large hull or long record, subsample time before calling to bound memory.
+    For a large hull or long record, subsample time before calling for memory usage purposes.
 
     Returns
     -------
@@ -194,7 +194,7 @@ def compute_w_planefit(uv_samples, remove_barotropic=False):
         From sample_uv, dims (time, glider, obs_depth).
     remove_barotropic : bool
         If True, subtract the depth-mean from U and V at each glider and timestep
-        before the plane fit, so the result estimates the baroclinic w only.
+        before the plane fit, so the result estimates the baroclinic w only. (Not using this)
 
     Returns
     -------
@@ -260,7 +260,7 @@ def compute_w_planefit(uv_samples, remove_barotropic=False):
 def _convex_hull_mask(xc_vals, yc_vals, positions):
     """
     Boolean mask (nYC, nXC) — True for model grid points inside the convex hull
-    of positions. Uses scipy ConvexHull + matplotlib Path; no shapely required.
+    of positions. Uses scipy ConvexHull + matplotlib Path
 
     Args:
         xc_vals: 1D array of grid X (lon) coordinates, length nXC
@@ -273,7 +273,7 @@ def _convex_hull_mask(xc_vals, yc_vals, positions):
     from scipy.spatial import ConvexHull
     from matplotlib.path import Path
 
-    # positions is (lat, lon); flip to (lon, lat) = (x, y) for spatial ops
+    # positions is (lat, lon) which is MITgcm default order; flip to (lon, lat) = (x, y) for spatial ops
     # WARNING: if caller passes (lon, lat) already, the hull will be mirrored
     pts = np.array([[p[1], p[0]] for p in positions])  # shape (N, 2)
 
