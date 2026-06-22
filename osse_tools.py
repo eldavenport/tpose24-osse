@@ -182,7 +182,6 @@ def eddy_anomalies(samp, mean_dim='time'):
 def compute_w_planefit(uv_samples, remove_barotropic=False):
     """
     Estimate w via plane fit to U and V across the array, then integrate divergence.
-
     At each (time, depth): fits u = a + b*x + c*y and v = a + b*x + c*y over the
     glider positions to extract du/dx and dv/dy. Integrates div = du/dx + dv/dy
     downward from w=0 at the surface using the continuity equation:
@@ -203,6 +202,12 @@ def compute_w_planefit(uv_samples, remove_barotropic=False):
         w_est : (time, depth)  estimated w at layer interfaces [m/s]
                                depth coordinate = [0, -dz, -2*dz, ..., -max_depth]
         div   : (time, obs_depth)  horizontal divergence at obs midpoints [1/s]
+
+    Notes
+    -----
+    Positions are projected onto a flat plane via _latlon_to_m (flat-Earth approximation).
+    Error grows with array extent; significant beyond ~50 km.
+    w=0 is assumed at the surface. This breaks near steep topography or strong surface convergence.
     """
     lats = uv_samples.lat.values
     lons = uv_samples.lon.values
@@ -210,10 +215,10 @@ def compute_w_planefit(uv_samples, remove_barotropic=False):
 
     # Pseudoinverse of design matrix — computed once, applied to all (time, depth)
     A = np.column_stack([np.ones(len(lats)), x_m, y_m])  # (N, 3)
-    Ainv = np.linalg.pinv(A)                              # (3, N)
+    Ainv = np.linalg.pinv(A)                              # (3, N): solves overdetermined plane fit in one multiply
 
     uv = uv_samples.compute()
-    U = uv['U'].values  # (ntime, nglider, n_obs)
+    U = uv['U'].values  # (ntime, nglider, n_obs) — must stay in this order; see reshape below
     V = uv['V'].values
     ntime, nglider, n_obs = U.shape
 
@@ -222,19 +227,22 @@ def compute_w_planefit(uv_samples, remove_barotropic=False):
         U = U - U.mean(axis=2, keepdims=True)
         V = V - V.mean(axis=2, keepdims=True)
 
-    # Transpose to (nglider, ntime, n_obs) then flatten for a single matrix multiply
+    # Transpose to (nglider, ntime, n_obs) so the glider axis aligns with Ainv's (3, N),
+    # then collapse (ntime, n_obs) → one axis to fit all times and depths in a single multiply.
+    # WARNING: assumes U.shape == (ntime, nglider, n_obs); assert this if dim ordering is ever uncertain.
     cu = Ainv @ U.transpose(1, 0, 2).reshape(nglider, ntime * n_obs)  # (3, ntime*n_obs)
-    cv = Ainv @ V.transpose(1, 0, 2).reshape(nglider, ntime * n_obs)
-
+    cv = Ainv @ V.transpose(1, 0, 2).reshape(nglider, ntime * n_obs)  # row 0=intercept, 1=d/dx, 2=d/dy
     du_dx = cu[1].reshape(ntime, n_obs)
     dv_dy = cv[2].reshape(ntime, n_obs)
     div_vals = du_dx + dv_dy
 
     obs_z = uv_samples.obs_depth.values      # midpoints, e.g. [-1, -3, ..., -69]
+    # WARNING: only the first interval is used — assumes uniform depth spacing throughout
     dz_obs = float(abs(obs_z[1] - obs_z[0])) if n_obs > 1 else float(abs(obs_z[0]) * 2)
     w_z = -np.arange(n_obs + 1) * dz_obs    # interfaces: [0, -dz, ..., -max_depth]
 
-    # Integrate downward: w(interface k+1) = w(interface k) + div(layer k) * dz
+    # Integrate downward from w=0 at surface: w(k+1) = w(k) + div(k) * dz
+    # Sign: integrating dw/dz = -div with dz < 0 gives Δw = div * |dz|, so no explicit minus needed
     w_vals = np.concatenate([
         np.zeros((ntime, 1)),
         np.cumsum(div_vals * dz_obs, axis=1)
@@ -247,7 +255,6 @@ def compute_w_planefit(uv_samples, remove_barotropic=False):
                             coords={'time': time_coord, 'obs_depth': obs_z})
     w_est_da = xr.DataArray(w_vals,   dims=('time', 'depth'),
                             coords={'time': time_coord, 'depth': w_z})
-
     return xr.Dataset({'w_est': w_est_da, 'div': div_da})
 
 
@@ -255,18 +262,32 @@ def _convex_hull_mask(xc_vals, yc_vals, positions):
     """
     Boolean mask (nYC, nXC) — True for model grid points inside the convex hull
     of positions. Uses scipy ConvexHull + matplotlib Path; no shapely required.
+
+    Args:
+        xc_vals: 1D array of grid X (lon) coordinates, length nXC
+        yc_vals: 1D array of grid Y (lat) coordinates, length nYC
+        positions: iterable of (lat, lon) pairs — NOTE: lat-first ordering assumed
+
+    Returns:
+        (nYC, nXC) numpy bool array; True where grid point is inside the hull
     """
     from scipy.spatial import ConvexHull
     from matplotlib.path import Path
 
-    pts = np.array([[p[1], p[0]] for p in positions])  # (lon, lat) ordering for Path
-    hull = ConvexHull(pts)
-    path = Path(pts[hull.vertices])
+    # positions is (lat, lon); flip to (lon, lat) = (x, y) for spatial ops
+    # WARNING: if caller passes (lon, lat) already, the hull will be mirrored
+    pts = np.array([[p[1], p[0]] for p in positions])  # shape (N, 2)
 
+    hull = ConvexHull(pts)          # raises QhullError if < 3 non-collinear pts
+    path = Path(pts[hull.vertices]) # boundary vertices only; relies on contains_points to close
+
+    # meshgrid with default indexing='xy': rows vary with Y, cols vary with X → (nYC, nXC)
     XC, YC = np.meshgrid(xc_vals, yc_vals)
+
     inside = path.contains_points(
-        np.column_stack([XC.ravel(), YC.ravel()])
-    ).reshape(XC.shape)
+        np.column_stack([XC.ravel(), YC.ravel()])  # (nYC*nXC, 2) in (x, y) order
+    ).reshape(XC.shape)                             # back to (nYC, nXC)
+
     return inside  # (nYC, nXC) numpy bool
 
 
