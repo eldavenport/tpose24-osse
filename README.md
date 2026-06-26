@@ -10,11 +10,15 @@ equatorial Pacific, using TPOSE24 model output as truth.
   area-mean WVEL (`sample_fields` → `compute_w_planefit` → `sample_model_w` →
   `plot_w_comparison`).
 - **Distributions:** sample T, S, U, V at the gliders and over the full model field
-  inside the array hull, then compare PDFs and joint PDFs of the fields, density,
+  inside the array, then compare PDFs and joint PDFs of the fields, density,
   eddy heat fluxes (v'T', u'T'), Reynolds stress (u'v'), and divergence
   (`sample_fields` / `model_region` → `add_density` → `eddy_anomalies` →
   `plot_field_pdfs` / `plot_joint_compare`).
 
-Array configurations live in `configs/*.json` as lists of (lat, lon) positions.
+Array configurations can live in `configs/*.json` as lists of (lat, lon) positions.
 
-Run the tests with: `conda run -n tpose python test_osse_tools.py`
+There are some tests that can be run with: `python test_osse_tools.py`
+
+required packages: numpy, xarray, matplotlib, cmocean, gsw, xmitgcm
+
+tested with Python 3.12 (so it's at least compatible with this version)
