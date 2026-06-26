@@ -15,6 +15,8 @@ equatorial Pacific, using TPOSE24 model output as truth.
   (`sample_fields` / `model_region` → `add_density` → `eddy_anomalies` →
   `plot_field_pdfs` / `plot_joint_compare`).
 
+Functions like `_convex_hull_mask` can be used to find all the points inside any polygon (for the model "truth" averages). 
+
 Array configurations can live in `configs/*.json` as lists of (lat, lon) positions. There are some examples in hex/, rectangle/ etc. 
 
 There are some tests that can be run with: `python test_osse_tools.py`
