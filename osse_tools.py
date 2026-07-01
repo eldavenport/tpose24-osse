@@ -97,15 +97,15 @@ def _hull_bbox(positions, buf=3 / 24):
     return (min(lons) - buf, max(lons) + buf, min(lats) - buf, max(lats) + buf)
 
 
-def _obs_z(max_depth, dz_obs):
-    """Layer-midpoint depths for sampling: -dz/2, -3dz/2, ..., down to max_depth."""
-    n = int(max_depth / dz_obs)
-    z = -(np.arange(n) * dz_obs + dz_obs / 2)
+def _obs_z(max_depth, dz_obs, min_depth=0):
+    """Layer-midpoint depths for sampling: -(min_depth+dz/2), ..., down to max_depth."""
+    n = int((max_depth - min_depth) / dz_obs)
+    z = -(min_depth + np.arange(n) * dz_obs + dz_obs / 2)
     return xr.DataArray(z, dims='obs_depth', coords={'obs_depth': z})
 
 
 def sample_fields(ds, positions, vars=('UVEL', 'VVEL', 'THETA', 'SALT'),
-                  max_depth=70, dz_obs=2):
+                  max_depth=70, dz_obs=2, min_depth=0):
     """
     Lazily interpolate model fields to each glider position at uniform obs depths.
 
@@ -119,14 +119,17 @@ def sample_fields(ds, positions, vars=('UVEL', 'VVEL', 'THETA', 'SALT'),
         MITgcm diagnostics to sample. Default UVEL, VVEL, THETA, SALT.
     max_depth, dz_obs : float
         Sampling depth range and interval in metres. Defaults 70 and 2.
+    min_depth : float
+        Shallowest depth sampled, e.g. 8 if the array can't see above 8 m.
+        compute_w_planefit assumes w=0 at this depth rather than at the surface.
 
     Returns
     -------
     xr.Dataset, dims (time, glider, obs_depth)
         Variables renamed U, V, T, S. Glider lat/lon stored as coordinates;
-        obs_depth holds layer midpoints (-1, -3, ..., -69 for 70 m / 2 m).
+        obs_depth holds layer midpoints (-1, -3, ..., -69 for 70 m / 2 m / 0 m min).
     """
-    obs_z_da = _obs_z(max_depth, dz_obs)
+    obs_z_da = _obs_z(max_depth, dz_obs, min_depth)
     g = np.arange(len(positions))
     lat_da = xr.DataArray([p[0] for p in positions], dims='glider', coords={'glider': g})
     lon_da = xr.DataArray([p[1] for p in positions], dims='glider', coords={'glider': g})
@@ -140,7 +143,7 @@ def sample_fields(ds, positions, vars=('UVEL', 'VVEL', 'THETA', 'SALT'),
 
 
 def model_region(ds, positions, vars=('UVEL', 'VVEL', 'THETA', 'SALT'),
-                 max_depth=70, dz_obs=2):
+                 max_depth=70, dz_obs=2, min_depth=0):
     """
     The 'true' population: model fields at every grid point inside the array hull.
 
@@ -155,7 +158,7 @@ def model_region(ds, positions, vars=('UVEL', 'VVEL', 'THETA', 'SALT'),
     xr.Dataset, dims (time, point, obs_depth)
         Variables renamed U, V, T, S; lat/lon stored as coordinates on point.
     """
-    obs_z_da = _obs_z(max_depth, dz_obs)
+    obs_z_da = _obs_z(max_depth, dz_obs, min_depth)
     lon0, lon1, lat0, lat1 = _hull_bbox(positions)
     xc = ds.XC.sel(XC=slice(lon0, lon1)).values
     yc = ds.YC.sel(YC=slice(lat0, lat1)).values
@@ -203,7 +206,7 @@ def compute_w_planefit(uv_samples, remove_barotropic=False):
     Estimate w via plane fit to U and V across the array, then integrate divergence.
     At each (time, depth): fits u = a + b*x + c*y and v = a + b*x + c*y over the
     glider positions to extract du/dx and dv/dy. Integrates div = du/dx + dv/dy
-    downward from w=0 at the surface using the continuity equation:
+    downward from w=0 at the shallowest sampled depth using the continuity equation:
         w(z_bottom) = w(z_top) + div * dz
     which follows from dw/dz = -div with z negative downward.
 
@@ -219,13 +222,13 @@ def compute_w_planefit(uv_samples, remove_barotropic=False):
     -------
     xr.Dataset with:
         w_est : (time, depth)  estimated w at layer interfaces [m/s]
-                               depth coordinate = [0, -dz, -2*dz, ..., -max_depth]
+                               depth coordinate = [z_top, z_top-dz, ..., z_top-n*dz]
         div   : (time, obs_depth)  horizontal divergence at obs midpoints [1/s]
 
     Notes
     -----
     Positions are projected onto a flat plane via _latlon_to_m (flat-Earth approximation).
-    w=0 is assumed at the surface.
+    w=0 is assumed at z_top, the shallowest depth in uv_samples.obs_depth (not necessarily the surface).
     """
     lats = uv_samples.lat.values
     lons = uv_samples.lon.values
@@ -254,10 +257,11 @@ def compute_w_planefit(uv_samples, remove_barotropic=False):
     dv_dy = cv[2].reshape(ntime, n_obs)
     div_vals = du_dx + dv_dy
 
-    obs_z = uv_samples.obs_depth.values      # midpoints, e.g. [-1, -3, ..., -69]
+    obs_z = uv_samples.obs_depth.values      # midpoints, e.g. [-9, -11, ..., -69] for an 8 m min_depth
     # WARNING: only the first interval is used — assumes uniform depth spacing throughout
     dz_obs = float(abs(obs_z[1] - obs_z[0])) if n_obs > 1 else float(abs(obs_z[0]) * 2)
-    w_z = -np.arange(n_obs + 1) * dz_obs    # interfaces: [0, -dz, ..., -max_depth]
+    z_top = obs_z[0] + dz_obs / 2            # shallowest interface; w=0 assumed here, not at 0 m
+    w_z = z_top - np.arange(n_obs + 1) * dz_obs   # interfaces: [z_top, z_top-dz, ..., z_top-n_obs*dz]
 
     # Integrate downward from w=0 at surface: w(k+1) = w(k) + div(k) * dz
     # Sign: integrating dw/dz = -div with dz < 0 gives Δw = div * |dz|, so no explicit minus needed
@@ -320,7 +324,7 @@ def _hull_mean(field, positions):
 
 
 def sample_model_w(ds, positions, max_depth=70, dz_obs=2,
-                   remove_barotropic=False, spatial_mean=True):
+                   remove_barotropic=False, spatial_mean=True, min_depth=0):
     """
     Sample WVEL interpolated to the interface depths of compute_w_planefit.
 
@@ -328,8 +332,8 @@ def sample_model_w(ds, positions, max_depth=70, dz_obs=2,
     ----------
     ds : xr.Dataset
     positions : list of (lat, lon)
-    max_depth, dz_obs : float
-        Must match the values used in sample_fields. Defaults 70 and 2.
+    max_depth, dz_obs, min_depth : float
+        Must match the values used in sample_fields. Defaults 70, 2, 0.
     remove_barotropic : bool
         If True, subtract the linear barotropic trend from the returned w.
     spatial_mean : bool
@@ -340,10 +344,13 @@ def sample_model_w(ds, positions, max_depth=70, dz_obs=2,
     Returns
     -------
     xr.DataArray, dims (time, depth)
-        depth coordinate = [0, -dz_obs, ..., -max_depth]
+        depth coordinate = [z_top, z_top-dz_obs, ..., -max_depth], z_top = -min_depth.
+        Note this is the model's true w (generally nonzero at z_top if min_depth > 0),
+        unlike compute_w_planefit's w_est which assumes w=0 there.
     """
-    n = int(max_depth / dz_obs)
-    w_z = -np.arange(n + 1) * dz_obs
+    z_top = -min_depth
+    n = int((max_depth - min_depth) / dz_obs)
+    w_z = z_top - np.arange(n + 1) * dz_obs
     w_z_da = xr.DataArray(w_z, dims='depth', coords={'depth': w_z})
 
     if spatial_mean:
@@ -354,16 +361,17 @@ def sample_model_w(ds, positions, max_depth=70, dz_obs=2,
         w = ds.WVEL.interp(XC=lon_c, YC=lat_c, Zl=w_z_da).compute()
 
     if remove_barotropic:
-        # Remove the linear barotropic trend: the component that takes w from 0
-        # at the surface to w(-H) at the bottom of the sampled layer.
+        # Remove the linear barotropic trend: the component that takes w from its
+        # value at z_top to w(-max_depth) at the bottom of the sampled layer.
         # This is consistent with compute_w_planefit(remove_barotropic=True),
         # which integrates div - <div>_z = d/dz[w - w(-H)/H * |z|].
         w_bottom = w.isel(depth=-1)
-        w = w + (w_bottom / max_depth) * w.depth
+        span = max_depth - min_depth
+        w = w + (w_bottom / span) * (w.depth - z_top)
     return w
 
 
-def model_divergence(ds, positions, max_depth=70, dz_obs=2):
+def model_divergence(ds, positions, max_depth=70, dz_obs=2, min_depth=0):
     """
     True horizontal divergence, area-averaged over the array hull.
 
@@ -379,7 +387,7 @@ def model_divergence(ds, positions, max_depth=70, dz_obs=2):
     grid = Grid(ds, periodic=False)
     div = (grid.diff(ds.UVEL * ds.dyG, 'X', boundary='fill') +
            grid.diff(ds.VVEL * ds.dxG, 'Y', boundary='fill')) / ds.rA
-    div = div.interp(Z=_obs_z(max_depth, dz_obs))
+    div = div.interp(Z=_obs_z(max_depth, dz_obs, min_depth))
     return _hull_mean(div, positions).compute()
 
 
@@ -685,7 +693,7 @@ def plot_w_comparison(w_est, w_model, depth_range=None, time_range=None, point_d
     return fig
 
 
-def plot_velocity_map(ds, positions, max_depth=70, time_range=None):
+def plot_velocity_map(ds, positions, max_depth=70, time_range=None, cells=None):
     """
     Three-panel map of depth- and time-averaged U, V, W with glider positions overlaid.
 
@@ -694,9 +702,15 @@ def plot_velocity_map(ds, positions, max_depth=70, time_range=None):
     ds : xr.Dataset
         From load_model.
     positions : list of (lat, lon)
+        Used only to set the map's zoom extent; ignored for markers if cells is given.
     max_depth : float
         Depth range to average over (surface to max_depth). Default 70.
     time_range : (t_start, t_end) as strings or datetimes, optional
+    cells : list of (label, positions, color), optional
+        Overlay each cell's positions in its own color instead of a single black
+        dot per position. A position shared by more than one cell is drawn as a
+        large circle (first owner) under a smaller star (each later owner), so
+        every membership color stays visible.
 
     Returns
     -------
@@ -723,17 +737,36 @@ def plot_velocity_map(ds, positions, max_depth=70, time_range=None):
         (w_mean, ds_t.XC.values, ds_t.YC.values, cmo.balance, 'Depth/time mean W  (m s⁻¹)'),
     ]
 
+    if cells is not None:
+        owners = {}
+        for label, pos, color in cells:
+            for p in pos:
+                owners.setdefault(p, []).append((label, color))
+        sizes = [130, 70, 45, 30]
+
     for ax, (data, xx, yy, cmap, title) in zip(axes, panels):
         vmax = float(np.nanpercentile(np.abs(data.values), 98))
         im = ax.pcolormesh(xx, yy, data.values, cmap=cmap,
                            vmin=-vmax, vmax=vmax, shading='auto')
         plt.colorbar(im, ax=ax, shrink=0.85, pad=0.02, label='m s⁻¹')
-        ax.scatter(glider_lons, glider_lats, c='k', s=40, zorder=5, marker='o')
+        if cells is None:
+            ax.scatter(glider_lons, glider_lats, c='k', s=40, zorder=5, marker='o')
+        else:
+            for p, owns in owners.items():
+                for (_, color), marker, size in zip(owns, ['o', '*', '^', 's'], sizes):
+                    ax.scatter(p[1], p[0], c=[color], s=size, marker=marker,
+                              zorder=5, edgecolor='k', linewidth=0.5)
         ax.set_xlim(*lon_lim)
         ax.set_ylim(*lat_lim)
         ax.set_xlabel('Longitude (°E)')
         ax.set_ylabel('Latitude (°N)')
         ax.set_title(title)
         ax.axhline(0, color='k', lw=0.5, ls=':')
+
+    if cells is not None:
+        handles = [plt.Line2D([0], [0], marker='o', color='w', markerfacecolor=c,
+                              markeredgecolor='k', markersize=9, label=l)
+                   for l, _, c in cells]
+        axes[0].legend(handles=handles, fontsize=8, title='cell', loc='upper right')
 
     return fig

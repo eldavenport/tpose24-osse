@@ -15,7 +15,7 @@ def _hexagon_positions(lat_c, lon_c, radius_deg):
             for a in angles]
 
 
-def _fake_uv_samples(positions, div_target, ntime=3, n_obs=10, dz_obs=2.0):
+def _fake_uv_samples(positions, div_target, ntime=3, n_obs=10, dz_obs=2.0, min_depth=0.0):
     """
     Build a uv_samples Dataset with a linear velocity field producing div_target.
     u = du_dx * x,  v = dv_dy * y,  du_dx = dv_dy = div_target / 2.
@@ -34,7 +34,7 @@ def _fake_uv_samples(positions, div_target, ntime=3, n_obs=10, dz_obs=2.0):
     n = len(positions)
     g = np.arange(n)
     time = xr.cftime_range('2012-10-01', periods=ntime, freq='3h')
-    obs_z = -(np.arange(n_obs) * dz_obs + dz_obs / 2)  # midpoints
+    obs_z = -(min_depth + np.arange(n_obs) * dz_obs + dz_obs / 2)  # midpoints
 
     U_vals = (du_dx * x_m)[np.newaxis, :, np.newaxis] * np.ones((ntime, n, n_obs))
     V_vals = (dv_dy * y_m)[np.newaxis, :, np.newaxis] * np.ones((ntime, n, n_obs))
@@ -85,6 +85,30 @@ def test_planefit_w_integration():
         f"w integration error:\n  expected={expected[:5]}\n  got={w[0, :5]}"
     )
     print(f"  w integration: w at interface 5={w[0,5]:.2e}, expected={expected[5]:.2e}  OK")
+
+
+def test_planefit_w_integration_min_depth():
+    """With a shallowest depth > 0 (e.g. an 8 m glider), w=0 should be assumed there, not at 0 m."""
+    from osse_tools import compute_w_planefit
+
+    positions = _hexagon_positions(0.0, 220.0, 0.125)
+    div_target = 1e-5
+    dz_obs = 2.0
+    n_obs = 10
+    min_depth = 8.0
+
+    uv = _fake_uv_samples(positions, div_target, n_obs=n_obs, dz_obs=dz_obs, min_depth=min_depth)
+    result = compute_w_planefit(uv)
+
+    w = result['w_est'].values   # (ntime, n_obs+1) at interfaces
+    z = result['w_est'].depth.values
+    assert np.isclose(z[0], -min_depth), f"expected z_top=-{min_depth}, got {z[0]}"
+    expected = div_target * np.arange(n_obs + 1) * dz_obs
+    assert np.allclose(w[0], expected, rtol=1e-6), (
+        f"w integration error with min_depth:\n  expected={expected[:5]}\n  got={w[0, :5]}"
+    )
+    print(f"  w integration (min_depth={min_depth}): z_top={z[0]}, "
+          f"w at interface 5={w[0,5]:.2e}, expected={expected[5]:.2e}  OK")
 
 
 def test_sample_fields_shape():
@@ -141,6 +165,7 @@ if __name__ == '__main__':
     tests = [
         test_planefit_div_recovery,
         test_planefit_w_integration,
+        test_planefit_w_integration_min_depth,
         test_sample_fields_shape,
         test_sample_model_w_shape,
         test_model_region_density_anomalies,
