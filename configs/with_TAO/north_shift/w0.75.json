@@ -1,0 +1,119 @@
+{
+  "name": "north_shift_w0.75",
+  "description": "North-shifted TAO+glider diamonds: 6 gliders at 219.25/220.75 deg lon, each row offset +0.5 deg lat from TAO 140W moorings (2S excluded). 3 overlapping diamonds give 3 independent w estimates centered at [-0.5, 0.5, 1.5].",
+  "pattern": "north_shift",
+  "lon_offset_deg": 0.75,
+  "tao_lats_used": [
+    -1,
+    0,
+    1,
+    2
+  ],
+  "positions": [
+    [
+      -1,
+      220.0
+    ],
+    [
+      0,
+      220.0
+    ],
+    [
+      1,
+      220.0
+    ],
+    [
+      2,
+      220.0
+    ],
+    [
+      -0.5,
+      219.25
+    ],
+    [
+      -0.5,
+      220.75
+    ],
+    [
+      0.5,
+      219.25
+    ],
+    [
+      0.5,
+      220.75
+    ],
+    [
+      1.5,
+      219.25
+    ],
+    [
+      1.5,
+      220.75
+    ]
+  ],
+  "cells": [
+    {
+      "center_lat": -0.5,
+      "positions": [
+        [
+          -1,
+          220.0
+        ],
+        [
+          0,
+          220.0
+        ],
+        [
+          -0.5,
+          219.25
+        ],
+        [
+          -0.5,
+          220.75
+        ]
+      ]
+    },
+    {
+      "center_lat": 0.5,
+      "positions": [
+        [
+          0,
+          220.0
+        ],
+        [
+          1,
+          220.0
+        ],
+        [
+          0.5,
+          219.25
+        ],
+        [
+          0.5,
+          220.75
+        ]
+      ]
+    },
+    {
+      "center_lat": 1.5,
+      "positions": [
+        [
+          1,
+          220.0
+        ],
+        [
+          2,
+          220.0
+        ],
+        [
+          1.5,
+          219.25
+        ],
+        [
+          1.5,
+          220.75
+        ]
+      ]
+    }
+  ]
+}
