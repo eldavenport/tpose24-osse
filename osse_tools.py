@@ -45,6 +45,25 @@ def load_positions(path):
     return [tuple(p) for p in cfg['positions']]
 
 
+def load_cells(path):
+    """
+    Load a multi-estimate array config (e.g. configs/with_TAO/north_shift/*.json).
+
+    Each config holds one or more independent 'cells' — small position sets
+    (e.g. a 4-point TAO+glider diamond) that each support their own plane fit.
+    The number of cells returned is the number of independent w estimates the
+    config is designed to produce; iterate and pass each cell's positions to
+    sample_fields / compute_w_planefit / sample_model_w in turn.
+
+    Returns
+    -------
+    list of (center_lat, positions) tuples, positions a list of (lat, lon) tuples
+    """
+    with open(path) as f:
+        cfg = json.load(f)
+    return [(c['center_lat'], [tuple(p) for p in c['positions']]) for c in cfg['cells']]
+
+
 def load_model(run_dir, iters, ref_date='2012-10-01', delta_t=300):
     """Open MITgcm diag_state diagnostics lazily, masking fill values."""
     ds = open_mdsdataset(
