@@ -211,8 +211,7 @@ def extrapolate_currents_to_surface(uv_samples):
     levels is assumed constant above the shallowest level. New layer midpoints are
     added at the same spacing from the shallowest level up toward the surface (the
     topmost midpoint sits at -dz/2 so its upper interface is 0 m). Every field with
-    an obs_depth dimension is extrapolated by its own top shear, keeping the dataset
-    rectangular; for the w workflow this is what extends U and V.
+    an obs_depth dimension is extrapolated by its own top shear, i.e., U and V use dU/dz and dV/dz.
 
     Parameters
     ----------
@@ -276,7 +275,7 @@ def compute_w_planefit(uv_samples, remove_barotropic=False, extrapolate_to_surfa
         If True (default), first extend U and V up to the surface using the vertical
         shear at the top of the profile (see extrapolate_currents_to_surface), so w
         is integrated from w=0 at the surface. If False, w=0 is assumed at the
-        shallowest sampled depth. For an 8-to-75 m array this fills in 0-8 m before
+        shallowest sampled depth. For an 8-to-75 m depth range this fills in 0-8 m before
         the plane fit.
 
     Returns
@@ -289,8 +288,7 @@ def compute_w_planefit(uv_samples, remove_barotropic=False, extrapolate_to_surfa
     Notes
     -----
     Positions are projected onto a flat plane via _latlon_to_m (flat-Earth approximation).
-    w=0 is assumed at z_top, the shallowest depth in uv_samples.obs_depth after any
-    surface extrapolation (the surface when extrapolate_to_surface is True).
+    w=0 is assumed at at the surface by default, otherwise 0 at z_top if no extrapolation happens.
     """
     if extrapolate_to_surface:
         uv_samples = extrapolate_currents_to_surface(uv_samples)
