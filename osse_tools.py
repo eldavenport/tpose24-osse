@@ -391,6 +391,88 @@ def model_divergence(ds, positions, max_depth=70, dz_obs=2, min_depth=0):
     return _hull_mean(div, positions).compute()
 
 
+# ---------------------------------------------------------------------------
+# Vertical-velocity skill metrics
+# ---------------------------------------------------------------------------
+
+def w_skill_metrics(w_est, w_model, depth_range=None):
+    """
+    Scalar skill of an estimated w against model-truth w, pooled over all
+    (time, depth) samples. Every metric is a plain descriptive statistic — no
+    thresholds or pass/fail judgements are applied.
+
+    Parameters
+    ----------
+    w_est, w_model : xr.DataArray, dims (time, depth)
+        Must share the same interface depth grid (as returned by
+        compute_w_planefit and sample_model_w).
+    depth_range : (z_shallow, z_deep) in model convention (e.g. (0, -50)), optional
+        Restrict the statistics to this depth slice before pooling.
+
+    Returns
+    -------
+    dict
+        rms         root-mean-square of (w_est - w_model) [m/s]
+        mean_bias   mean of (w_est - w_model) [m/s]
+        corr        Pearson correlation of w_est and w_model over (time, depth)
+        w_est_std   std of w_est [m/s]
+        w_model_std std of w_model, i.e. the signal being estimated [m/s]
+        norm_rms    rms / w_model_std (error relative to the signal); NaN if signal std is 0
+        n           number of finite sample pairs used
+    """
+    if depth_range is not None:
+        w_est   = w_est.sel(depth=slice(*depth_range))
+        w_model = w_model.sel(depth=slice(*depth_range))
+    est = np.asarray(w_est.values, float).ravel()
+    mod = np.asarray(w_model.values, float).ravel()
+    good = np.isfinite(est) & np.isfinite(mod)
+    est, mod = est[good], mod[good]
+    bias    = est - mod
+    est_std = float(est.std()) if est.size else np.nan
+    mod_std = float(mod.std()) if mod.size else np.nan
+    rms     = float(np.sqrt((bias ** 2).mean())) if bias.size else np.nan
+    corr    = (float(np.corrcoef(est, mod)[0, 1])
+               if est.size > 1 and est_std > 0 and mod_std > 0 else np.nan)
+    return dict(
+        rms=rms,
+        mean_bias=float(bias.mean()) if bias.size else np.nan,
+        corr=corr,
+        w_est_std=est_std,
+        w_model_std=mod_std,
+        norm_rms=rms / mod_std if mod_std and mod_std > 0 else np.nan,
+        n=int(est.size),
+    )
+
+
+def w_skill_by_depth(w_est, w_model):
+    """
+    Depth-resolved skill: the same descriptive statistics as w_skill_metrics,
+    computed at each depth by pooling over time. Use to show how error grows
+    with integration depth within a single sampled range.
+
+    Returns
+    -------
+    xr.Dataset, dim (depth)
+        rms, mean_bias, corr, w_est_std, w_model_std, norm_rms
+    """
+    bias      = w_est - w_model
+    rms       = np.sqrt((bias ** 2).mean('time'))
+    est_std   = w_est.std('time')
+    mod_std   = w_model.std('time')
+    # correlation over time at each depth, from the time anomalies
+    ea = w_est   - w_est.mean('time')
+    ma = w_model - w_model.mean('time')
+    corr = (ea * ma).mean('time') / (est_std * mod_std)
+    return xr.Dataset(dict(
+        rms=rms,
+        mean_bias=bias.mean('time'),
+        corr=corr,
+        w_est_std=est_std,
+        w_model_std=mod_std,
+        norm_rms=rms / mod_std,
+    ))
+
+
 def vertical_eddy_flux(w, tracers, mean_dim='time'):
     """
     Vertical eddy flux <w' phi'> over mean_dim for each tracer present (U,V,T,S).
