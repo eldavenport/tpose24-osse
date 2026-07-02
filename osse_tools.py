@@ -201,7 +201,62 @@ def eddy_anomalies(samp, mean_dim='time'):
     return samp
 
 
-def compute_w_planefit(uv_samples, remove_barotropic=False):
+def extrapolate_currents_to_surface(uv_samples):
+    """
+    Extend the sampled profile upward to the surface using the vertical shear at
+    the top of the profile, so a plane-fit w can integrate from w=0 at the surface
+    rather than from the shallowest sampled depth.
+
+    The vertical shear dU/dz (and dV/dz, etc.) between the two shallowest obs_depth
+    levels is assumed constant above the shallowest level. New layer midpoints are
+    added at the same spacing from the shallowest level up toward the surface (the
+    topmost midpoint sits at -dz/2 so its upper interface is 0 m). Every field with
+    an obs_depth dimension is extrapolated by its own top shear, keeping the dataset
+    rectangular; for the w workflow this is what extends U and V.
+
+    Parameters
+    ----------
+    uv_samples : xr.Dataset
+        dims (time, glider, obs_depth), with U, V and lat/lon coords.
+        obs_depth midpoints must be uniformly spaced, shallowest (least negative) first.
+
+    Returns
+    -------
+    xr.Dataset
+        Same variables as the input with extra shallower obs_depth levels prepended.
+        Returned unchanged if the shallowest level is already within dz/2 of 0 m,
+        or if there are fewer than two obs_depth levels to define a shear.
+    """
+    obs_z = uv_samples.obs_depth.values
+    if obs_z.size < 2:
+        return uv_samples
+    dz = obs_z[1] - obs_z[0]                  # signed spacing (negative: deeper index)
+    z_top = float(obs_z[0])                   # shallowest midpoint, e.g. -9
+
+    # New midpoints from just above z_top up toward the surface, staying below 0 m.
+    # e.g. z_top=-9, dz=-2 -> [-7, -5, -3, -1]
+    new_mids = np.arange(z_top - dz, 0.0, -dz)
+    if new_mids.size == 0:
+        return uv_samples                     # already reaches the surface
+    new_mids = new_mids[::-1]                 # shallowest first: [-1, -3, -5, -7]
+
+    out = {}
+    for v in uv_samples.data_vars:
+        arr = uv_samples[v]
+        if 'obs_depth' not in arr.dims:
+            out[v] = arr
+            continue
+        top0 = arr.isel(obs_depth=0)
+        shear = (arr.isel(obs_depth=1) - top0) / dz        # d/dz at the top of the profile
+        extra = xr.concat([top0 + shear * (zm - z_top) for zm in new_mids],
+                          dim='obs_depth').assign_coords(obs_depth=new_mids)
+        # concat puts obs_depth first; restore the caller's dim order (compute_w_planefit
+        # relies on U being (time, glider, obs_depth))
+        out[v] = xr.concat([extra, arr], dim='obs_depth').transpose(*arr.dims)
+    return xr.Dataset(out)
+
+
+def compute_w_planefit(uv_samples, remove_barotropic=False, extrapolate_to_surface=True):
     """
     Estimate w via plane fit to U and V across the array, then integrate divergence.
     At each (time, depth): fits u = a + b*x + c*y and v = a + b*x + c*y over the
@@ -217,6 +272,12 @@ def compute_w_planefit(uv_samples, remove_barotropic=False):
     remove_barotropic : bool
         If True, subtract the depth-mean from U and V at each glider and timestep
         before the plane fit, so the result estimates the baroclinic w only. (Not using this)
+    extrapolate_to_surface : bool
+        If True (default), first extend U and V up to the surface using the vertical
+        shear at the top of the profile (see extrapolate_currents_to_surface), so w
+        is integrated from w=0 at the surface. If False, w=0 is assumed at the
+        shallowest sampled depth. For an 8-to-75 m array this fills in 0-8 m before
+        the plane fit.
 
     Returns
     -------
@@ -228,8 +289,12 @@ def compute_w_planefit(uv_samples, remove_barotropic=False):
     Notes
     -----
     Positions are projected onto a flat plane via _latlon_to_m (flat-Earth approximation).
-    w=0 is assumed at z_top, the shallowest depth in uv_samples.obs_depth (not necessarily the surface).
+    w=0 is assumed at z_top, the shallowest depth in uv_samples.obs_depth after any
+    surface extrapolation (the surface when extrapolate_to_surface is True).
     """
+    if extrapolate_to_surface:
+        uv_samples = extrapolate_currents_to_surface(uv_samples)
+
     lats = uv_samples.lat.values
     lons = uv_samples.lon.values
     x_m, y_m = _latlon_to_m(lats, lons)
@@ -789,10 +854,11 @@ def plot_velocity_map(ds, positions, max_depth=70, time_range=None, cells=None):
         Depth range to average over (surface to max_depth). Default 70.
     time_range : (t_start, t_end) as strings or datetimes, optional
     cells : list of (label, positions, color), optional
-        Overlay each cell's positions in its own color instead of a single black
-        dot per position. A position shared by more than one cell is drawn as a
-        large circle (first owner) under a smaller star (each later owner), so
-        every membership color stays visible.
+        Overlay each cell in its own color: the cell outline (convex hull of its
+        positions) is drawn as a colored line and its centre (centroid of its
+        positions) as a colored dot. Gliders (positions offset from the mooring
+        meridian) are black stars and moorings (positions on the meridian) black
+        dots, drawn once regardless of how many cells share them.
 
     Returns
     -------
@@ -820,11 +886,14 @@ def plot_velocity_map(ds, positions, max_depth=70, time_range=None, cells=None):
     ]
 
     if cells is not None:
-        owners = {}
-        for label, pos, color in cells:
-            for p in pos:
-                owners.setdefault(p, []).append((label, color))
-        sizes = [130, 70, 45, 30]
+        from scipy.spatial import ConvexHull
+        # Moorings sit on the array's central meridian (the mean longitude, about
+        # which each array is symmetric); gliders are offset in longitude from it.
+        # Dedup across cells that share points.
+        all_pos = sorted({p for _, pos, _ in cells for p in pos})
+        mooring_lon = float(np.mean([p[1] for p in all_pos]))
+        moorings = [p for p in all_pos if abs(p[1] - mooring_lon) < 1e-6]
+        gliders_ = [p for p in all_pos if abs(p[1] - mooring_lon) >= 1e-6]
 
     for ax, (data, xx, yy, cmap, title) in zip(axes, panels):
         vmax = float(np.nanpercentile(np.abs(data.values), 98))
@@ -834,10 +903,22 @@ def plot_velocity_map(ds, positions, max_depth=70, time_range=None, cells=None):
         if cells is None:
             ax.scatter(glider_lons, glider_lats, c='k', s=40, zorder=5, marker='o')
         else:
-            for p, owns in owners.items():
-                for (_, color), marker, size in zip(owns, ['o', '*', '^', 's'], sizes):
-                    ax.scatter(p[1], p[0], c=[color], s=size, marker=marker,
-                              zorder=5, edgecolor='k', linewidth=0.5)
+            for label, pos, color in cells:
+                pts = np.array([(p[1], p[0]) for p in pos])  # (lon, lat)
+                if len(pts) >= 3:  # outline = convex hull boundary
+                    verts = ConvexHull(pts).vertices
+                    ring = np.append(verts, verts[0])
+                    ax.plot(pts[ring, 0], pts[ring, 1], color=color, lw=1.5, zorder=4)
+                # cell centre = centroid of its positions
+                ax.scatter(pts[:, 0].mean(), pts[:, 1].mean(), c=[color], s=70,
+                           marker='o', zorder=6, edgecolor='k', linewidth=0.5)
+            # gliders as black stars, moorings as black dots (once, all cells)
+            if gliders_:
+                ax.scatter([p[1] for p in gliders_], [p[0] for p in gliders_],
+                           c='k', s=90, marker='*', zorder=5)
+            if moorings:
+                ax.scatter([p[1] for p in moorings], [p[0] for p in moorings],
+                           c='k', s=30, marker='o', zorder=5)
         ax.set_xlim(*lon_lim)
         ax.set_ylim(*lat_lim)
         ax.set_xlabel('Longitude (°E)')
@@ -846,9 +927,15 @@ def plot_velocity_map(ds, positions, max_depth=70, time_range=None, cells=None):
         ax.axhline(0, color='k', lw=0.5, ls=':')
 
     if cells is not None:
-        handles = [plt.Line2D([0], [0], marker='o', color='w', markerfacecolor=c,
-                              markeredgecolor='k', markersize=9, label=l)
-                   for l, _, c in cells]
-        axes[0].legend(handles=handles, fontsize=8, title='cell', loc='upper right')
+        handles = [
+            plt.Line2D([0], [0], marker='*', color='w', markerfacecolor='k',
+                       markeredgecolor='k', markersize=12, label='glider'),
+            plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='k',
+                       markeredgecolor='k', markersize=7, label='mooring'),
+        ]
+        handles += [plt.Line2D([0], [0], marker='o', color=c, markerfacecolor=c,
+                              markeredgecolor='k', markersize=9, label=f'cell {l}')
+                    for l, _, c in cells]
+        axes[0].legend(handles=handles, fontsize=8, loc='upper right')
 
     return fig

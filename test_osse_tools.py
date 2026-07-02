@@ -98,7 +98,7 @@ def test_planefit_w_integration_min_depth():
     min_depth = 8.0
 
     uv = _fake_uv_samples(positions, div_target, n_obs=n_obs, dz_obs=dz_obs, min_depth=min_depth)
-    result = compute_w_planefit(uv)
+    result = compute_w_planefit(uv, extrapolate_to_surface=False)
 
     w = result['w_est'].values   # (ntime, n_obs+1) at interfaces
     z = result['w_est'].depth.values
@@ -109,6 +109,91 @@ def test_planefit_w_integration_min_depth():
     )
     print(f"  w integration (min_depth={min_depth}): z_top={z[0]}, "
           f"w at interface 5={w[0,5]:.2e}, expected={expected[5]:.2e}  OK")
+
+
+def test_extrapolate_currents_to_surface():
+    """Shear at the top of the profile should extend U, V linearly up to the surface."""
+    from osse_tools import extrapolate_currents_to_surface
+
+    dz_obs = 2.0
+    min_depth = 8.0
+    n_obs = 4
+    obs_z = -(min_depth + np.arange(n_obs) * dz_obs + dz_obs / 2)  # [-9, -11, -13, -15]
+    z_top = obs_z[0]
+
+    # U linear in depth with a known shear; V constant (zero shear).
+    shear = 0.01  # (m/s) / m
+    g = np.array([0, 1])
+    time = xr.cftime_range('2012-10-01', periods=2, freq='3h')
+    U_prof = 0.5 + shear * (obs_z - z_top)   # value 0.5 at z_top, sheared below
+    U_vals = np.broadcast_to(U_prof, (2, 2, n_obs)).copy()
+    V_vals = np.full((2, 2, n_obs), 0.3)
+
+    coords = {'time': time, 'glider': g, 'obs_depth': obs_z}
+    uv = xr.Dataset(
+        {'U': (('time', 'glider', 'obs_depth'), U_vals),
+         'V': (('time', 'glider', 'obs_depth'), V_vals)},
+        coords=coords,
+    ).assign_coords(lat=('glider', [0.0, 0.1]), lon=('glider', [220.0, 220.1]))
+
+    ext = extrapolate_currents_to_surface(uv)
+    z = ext.obs_depth.values
+    # 4 new shallow levels added: [-1, -3, -5, -7]
+    assert np.allclose(z[:4], [-1, -3, -5, -7]), f"new midpoints wrong: {z[:4]}"
+    assert np.allclose(z[4:], obs_z), "original levels not preserved"
+    # top interface reaches the surface
+    assert np.isclose(z[0] + dz_obs / 2, 0.0), f"top interface not at surface: {z[0] + dz_obs/2}"
+
+    # U at every level should lie on the same straight line 0.5 + shear*(z - z_top)
+    expected_U = 0.5 + shear * (z - z_top)
+    assert np.allclose(ext['U'].values[0, 0], expected_U), (
+        f"extrapolated U off the shear line:\n  got={ext['U'].values[0,0]}\n  exp={expected_U}"
+    )
+    # V had zero shear, so it stays constant
+    assert np.allclose(ext['V'].values, 0.3), "constant V should not change"
+    print(f"  extrapolate: added {z[:4]}, U(0m)={ext['U'].values[0,0,0]:.3f} "
+          f"(exp {expected_U[0]:.3f})  OK")
+
+
+def test_planefit_extrapolate_to_surface():
+    """With extrapolation on, an 8 m array should integrate w from the surface (z=0)."""
+    from osse_tools import compute_w_planefit
+
+    positions = _hexagon_positions(0.0, 220.0, 0.125)
+    div_target = 1e-5
+    dz_obs = 2.0
+    n_obs = 10
+    min_depth = 8.0
+
+    uv = _fake_uv_samples(positions, div_target, n_obs=n_obs, dz_obs=dz_obs, min_depth=min_depth)
+    # depth-uniform field -> zero shear -> extrapolation just extends the same div upward
+    result = compute_w_planefit(uv, extrapolate_to_surface=True)
+
+    z = result['w_est'].depth.values
+    assert np.isclose(z[0], 0.0), f"expected surface top interface z=0, got {z[0]}"
+    n_total = n_obs + int(min_depth / dz_obs)   # 4 levels added to reach the surface
+    assert result['div'].shape[1] == n_total, (
+        f"expected {n_total} obs levels after extrapolation, got {result['div'].shape[1]}")
+    assert np.allclose(result['div'].values, div_target, rtol=1e-6), "div not preserved"
+    w = result['w_est'].values
+    expected = div_target * np.arange(n_total + 1) * dz_obs
+    assert np.allclose(w[0], expected, rtol=1e-6), (
+        f"w integration from surface wrong:\n  expected={expected[:5]}\n  got={w[0,:5]}")
+    print(f"  planefit+extrapolate: z_top={z[0]}, {n_total} obs levels, "
+          f"w at 5={w[0,5]:.2e} (exp {expected[5]:.2e})  OK")
+
+
+def test_planefit_no_extrapolate_matches_min_depth():
+    """extrapolate_to_surface=False should reproduce the w=0-at-shallowest behavior."""
+    from osse_tools import compute_w_planefit
+
+    positions = _hexagon_positions(0.0, 220.0, 0.125)
+    div_target = 1e-5
+    uv = _fake_uv_samples(positions, div_target, n_obs=10, dz_obs=2.0, min_depth=8.0)
+    result = compute_w_planefit(uv, extrapolate_to_surface=False)
+    z = result['w_est'].depth.values
+    assert np.isclose(z[0], -8.0), f"expected z_top=-8 with extrapolation off, got {z[0]}"
+    print(f"  planefit no-extrapolate: z_top={z[0]}  OK")
 
 
 def test_sample_fields_shape():
@@ -166,6 +251,9 @@ if __name__ == '__main__':
         test_planefit_div_recovery,
         test_planefit_w_integration,
         test_planefit_w_integration_min_depth,
+        test_extrapolate_currents_to_surface,
+        test_planefit_extrapolate_to_surface,
+        test_planefit_no_extrapolate_matches_min_depth,
         test_sample_fields_shape,
         test_sample_model_w_shape,
         test_model_region_density_anomalies,
