@@ -1,0 +1,59 @@
+{
+  "name": "equator_sq1deg_w2.0",
+  "family": "equator",
+  "pattern": "equator_sq1deg",
+  "width": 2.0,
+  "n_gliders_per_cell": 4,
+  "n_gliders_total": 4,
+  "cell_height_deg": 1.0,
+  "description": "Equator-centred square (box), 1deg tall, 4 corner gliders at glider lon offset 2.0 deg, with span moorings.",
+  "positions": [
+    [
+      0.5,
+      218.0
+    ],
+    [
+      0.5,
+      222.0
+    ],
+    [
+      -0.5,
+      218.0
+    ],
+    [
+      -0.5,
+      222.0
+    ],
+    [
+      0.0,
+      220.0
+    ]
+  ],
+  "cells": [
+    {
+      "center_lat": 0.0,
+      "positions": [
+        [
+          0.5,
+          218.0
+        ],
+        [
+          0.5,
+          222.0
+        ],
+        [
+          -0.5,
+          218.0
+        ],
+        [
+          -0.5,
+          222.0
+        ],
+        [
+          0.0,
+          220.0
+        ]
+      ]
+    }
+  ]
+}

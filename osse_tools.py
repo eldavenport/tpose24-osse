@@ -467,8 +467,10 @@ def w_skill_metrics(w_est, w_model, depth_range=None):
     Parameters
     ----------
     w_est, w_model : xr.DataArray, dims (time, depth)
-        Must share the same interface depth grid (as returned by
-        compute_w_planefit and sample_model_w).
+        Both from compute_w_planefit / sample_model_w. They need not share the
+        same interface depth grid: when compute_w_planefit extrapolated to the
+        surface, w_est carries extra shallow interfaces above -min_depth. The two
+        are aligned to their shared (time, depth) grid before pooling.
     depth_range : (z_shallow, z_deep) in model convention (e.g. (0, -50)), optional
         Restrict the statistics to this depth slice before pooling.
 
@@ -486,6 +488,9 @@ def w_skill_metrics(w_est, w_model, depth_range=None):
     if depth_range is not None:
         w_est   = w_est.sel(depth=slice(*depth_range))
         w_model = w_model.sel(depth=slice(*depth_range))
+    # Compare only where both are defined: an extrapolated-to-surface w_est spans
+    # shallower interfaces than w_model, so raveling raw .values would mismatch.
+    w_est, w_model = xr.align(w_est, w_model, join='inner')
     est = np.asarray(w_est.values, float).ravel()
     mod = np.asarray(w_model.values, float).ravel()
     good = np.isfinite(est) & np.isfinite(mod)

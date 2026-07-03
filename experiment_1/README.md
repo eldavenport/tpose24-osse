@@ -10,7 +10,7 @@ by the signal std, correlation, bias;
 | family    | what it varies | cells |
 |-----------|----------------|-------|
 | `shift`   | one 4-cell array of 1° diamonds, glider lon offset 0.25–2.0 | −1.5, −0.5, 0.5, 1.5 |
-| `equator` | equator-centred estimates: diamonds `2deg`/`1deg`, hexagons `hex2deg` (4 gliders) / `hex1deg` (6 gliders), and `3cell` (symmetric array at −1/0/+1) | 0, or −1/0/+1 |
+| `equator` | equator-centred estimates: diamonds `2deg`/`1deg`, hexagons `hex2deg` (4 gliders) / `hex1deg` (6 gliders), squares `sq2deg`/`sq1deg` (4 corner gliders, the diamond as an axis-aligned box for extra du/dx info), and `3cell` (symmetric array at −1/0/+1) | 0, or −1/0/+1 |
 | `density` | fixed centre 0.5°N, gliders-per-cell = 2/4/6 at each width | 0.5 |
 
 TAO moorings are on the 140°W line (lon 220) at lat {−2,−1,0,1,2}; Any mooring interior to a 
@@ -21,13 +21,14 @@ because they are intended to evaluate the error associated with different config
 
 ## Pipeline
 
-1. `python generate_configs.py` — writes all 54 configs under `configs/`.
+1. `python generate_configs.py` — writes all 66 configs under `configs/`.
 2. `python run_experiment.py` — opens the model once, samples U,V at every glider
    position, computes plane-fit `w_est` and hull-mean model-truth `w_model` per
    cell, and writes:
    - `data/<config>__cell_<center>.nc` — `w_est`, `w_model`, `bias` (dims time, depth)
    - `data/metrics.csv` — one row per cell with skill stats + config metadata
-   Re-running skips cells whose `.nc` already exists (delete `data/` to recompute).
+   Re-running recomputes every cell from scratch (results are deterministic, so
+   existing configs come out identical) and rewrites all `data/*.nc` + `metrics.csv`.
 3. `summary.ipynb` — the 5 presentation figures → `summary_figs/`.
 4. `make_experiment_figs.ipynb` — per-config diagnostics
    (`w_comparison` Hovmöllers + `velocity_map`) → `experiment_figs/<config>/`.
@@ -44,12 +45,12 @@ Skill metrics come from `osse_tools.w_skill_metrics` / `w_skill_by_depth`.
    `fig2a–2d` break this out one method per figure, each coloured by the parameter
    it tunes and carrying a platform-layout panel (squares=moorings, circles=gliders):
    `2a` shift array (4 cell latitudes), `2b` equator 3-cell (centre lat), `2c`
-   density (gliders-per-cell), `2d` equator single-cell (diamond vs hexagon × 1°/2°
-   tall). Multi-cell arrays (2a, 2b) draw the cells stacked; single-cell
-   alternatives (2c, 2d) side by side.
+   density (gliders-per-cell), `2d` equator single-cell (diamond / hexagon / square
+   × 1°/2° tall; colour = shape, linestyle = height, no markers). Multi-cell arrays
+   (2a, 2b) draw the cells stacked; single-cell alternatives (2c, 2d) side by side.
 3. `fig3_skill_vs_latitude` — skill vs cell latitude for the two multi-cell arrays
    (4-cell shift, equator 3-cell), one line per glider offset.
 4. `fig4_skill_vs_gliders` — skill vs gliders-per-cell at fixed centre 0.5°N.
 5. `fig5a–5d` — skill vs depth, one method per figure, coloured by that method's
    tunable parameter (parallels `fig2a–2d`): `5a` shift, `5b` equator 3-cell,
-   `5c` density, `5d` equator single-cell (diamond vs hexagon × 1°/2°).
+   `5c` density, `5d` equator single-cell (diamond / hexagon / square × 1°/2°).

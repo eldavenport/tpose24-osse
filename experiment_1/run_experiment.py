@@ -4,8 +4,10 @@ run_experiment.py — sample the model once, estimate w for every experiment_1
 configuration/cell, and save arrays plus a master metrics table.
 
 Design:
-  * The model is opened once and U,V are sampled at the union of all glider
-    positions in a single pass (the only heavy read).
+  * Cells whose .nc is already on disk are skipped: their metrics row is rebuilt
+    straight from the saved arrays, so no model read is needed for them.
+  * The model is opened (and U,V sampled) only if there are pending cells, and
+    only at the positions / footprints those pending cells require.
   * Model-truth w (hull-mean WVEL) is computed once per unique cell footprint
     and cached, since many configs share footprints.
   * Nothing here decides which configuration is "best" — it only records
@@ -52,72 +54,81 @@ def _footprint_key(positions):
     return tuple(sorted((round(p[0], 6), round(p[1], 6)) for p in positions))
 
 
+def _metrics_row(cfg, center_lat, nc_path):
+    """Skill row for one cell, computed from its saved w_est/w_model arrays."""
+    with xr.open_dataset(nc_path) as ds:
+        m = ot.w_skill_metrics(ds.w_est, ds.w_model)
+    return dict(
+        config=cfg['name'], family=cfg['family'], pattern=cfg['pattern'],
+        width=cfg['width'], center_lat=center_lat,
+        n_gliders_cell=cfg['n_gliders_per_cell'],
+        n_gliders_total=cfg['n_gliders_total'],
+        cell_height_deg=cfg['cell_height_deg'],
+        min_depth=MIN_DEPTH, max_depth=MAX_DEPTH,
+        nc_path=os.path.relpath(nc_path, HERE), **m)
+
+
 def main():
     os.makedirs(DATA_DIR, exist_ok=True)
     config_paths = sorted(glob.glob(CFG_GLOB, recursive=True))
     print(f'Found {len(config_paths)} configs')
 
-    # Parse configs; collect every cell and the union of all glider positions.
-    configs = []            # (meta dict, [(center_lat, positions), ...])
-    all_positions = set()
+    # Parse configs and split each cell into cached (.nc already on disk) vs
+    # pending (needs computing). Only the pending cells drive the model read.
+    cached = []             # (cfg, center_lat, nc_path)
+    pending = []            # (cfg, center_lat, positions, nc_path)
     for path in config_paths:
         with open(path) as f:
             cfg = json.load(f)
-        cells = ot.load_cells(path)
-        configs.append((cfg, cells))
-        for _, pos in cells:
-            all_positions.update((round(p[0], 6), round(p[1], 6)) for p in pos)
-    all_positions = sorted(all_positions)
-    pos_idx = {p: i for i, p in enumerate(all_positions)}
-    print(f'{len(all_positions)} unique glider positions across all cells')
+        for center_lat, pos in ot.load_cells(path):
+            nc_path = os.path.join(DATA_DIR, f'{cfg["name"]}__cell_{center_lat:+.2f}.nc')
+            if os.path.exists(nc_path):
+                cached.append((cfg, center_lat, nc_path))
+            else:
+                pending.append((cfg, center_lat, pos, nc_path))
+    print(f'{len(cached)} cells cached (skipped), {len(pending)} to compute')
 
-    # Open the model and sample U,V once at every position (the heavy read).
-    ds = ot.load_model(RUN_DIR, ITERS).sel(time=slice(SPINUP_END, None))
-    print(f'Model loaded: {ds.sizes["time"]} timesteps after spin-up')
-    uv_all = ot.sample_fields(ds, all_positions, vars=('UVEL', 'VVEL'),
-                              max_depth=MAX_DEPTH, dz_obs=DZ_OBS, min_depth=MIN_DEPTH).compute()
-    print('Sampled U,V at all positions')
+    # Cached cells: rebuild their metrics row directly from the saved arrays.
+    rows = [_metrics_row(cfg, cl, p) for cfg, cl, p in cached]
 
-    # Model-truth w is expensive; compute one per unique cell footprint, in parallel.
-    unique = {}
-    for _, cells in configs:
-        for _, pos in cells:
+    if pending:
+        # Sample U,V only at the positions the pending cells actually need.
+        all_positions = sorted({(round(p[0], 6), round(p[1], 6))
+                                 for _, _, pos, _ in pending for p in pos})
+        pos_idx = {p: i for i, p in enumerate(all_positions)}
+        print(f'{len(all_positions)} unique glider positions across pending cells')
+
+        ds = ot.load_model(RUN_DIR, ITERS).sel(time=slice(SPINUP_END, None))
+        print(f'Model loaded: {ds.sizes["time"]} timesteps after spin-up')
+        uv_all = ot.sample_fields(ds, all_positions, vars=('UVEL', 'VVEL'),
+                                  max_depth=MAX_DEPTH, dz_obs=DZ_OBS, min_depth=MIN_DEPTH).compute()
+        print('Sampled U,V at pending positions')
+
+        # Model-truth w is expensive; compute one per unique pending footprint.
+        unique = {}
+        for _, _, pos, _ in pending:
             unique.setdefault(_footprint_key(pos), pos)
-    print(f'{len(unique)} unique cell footprints -> computing model-truth w')
+        print(f'{len(unique)} unique pending footprints -> computing model-truth w')
 
-    def _w_model(pos):
-        return ot.sample_model_w(ds, pos, max_depth=MAX_DEPTH, dz_obs=DZ_OBS,
-                                 min_depth=MIN_DEPTH, spatial_mean=True)
+        def _w_model(pos):
+            return ot.sample_model_w(ds, pos, max_depth=MAX_DEPTH, dz_obs=DZ_OBS,
+                                     min_depth=MIN_DEPTH, spatial_mean=True)
 
-    keys = list(unique)
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
-        w_model_cache = dict(zip(keys, ex.map(lambda k: _w_model(unique[k]), keys)))
-    print('Model-truth w computed for all footprints')
+        keys = list(unique)
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+            w_model_cache = dict(zip(keys, ex.map(lambda k: _w_model(unique[k]), keys)))
+        print('Model-truth w computed for pending footprints')
 
-    # Estimate w per cell, save arrays, and record skill statistics.
-    rows = []
-    for cfg, cells in configs:
-        name = cfg['name']
-        for center_lat, pos in cells:
-            nc_path = os.path.join(DATA_DIR, f'{name}__cell_{center_lat:+.2f}.nc')
-            key = _footprint_key(pos)
-            w_model = w_model_cache[key]
+        # Estimate w per pending cell, save arrays, and record skill statistics.
+        for cfg, center_lat, pos, nc_path in pending:
+            w_model = w_model_cache[_footprint_key(pos)]
             uv = uv_all.isel(glider=[pos_idx[(round(p[0], 6), round(p[1], 6))] for p in pos])
             # w=0 at the shallowest SAMPLED depth (MIN_DEPTH), not the surface, so
             # w_est spans the same interfaces as w_model (which uses min_depth=MIN_DEPTH).
             w_est = ot.compute_w_planefit(uv, extrapolate_to_surface=False)['w_est']
             bias = w_est - w_model
-
             xr.Dataset(dict(w_est=w_est, w_model=w_model, bias=bias)).to_netcdf(nc_path)
-            m = ot.w_skill_metrics(w_est, w_model)
-            rows.append(dict(
-                config=name, family=cfg['family'], pattern=cfg['pattern'],
-                width=cfg['width'], center_lat=center_lat,
-                n_gliders_cell=cfg['n_gliders_per_cell'],
-                n_gliders_total=cfg['n_gliders_total'],
-                cell_height_deg=cfg['cell_height_deg'],
-                min_depth=MIN_DEPTH, max_depth=MAX_DEPTH,
-                nc_path=os.path.relpath(nc_path, HERE), **m))
+            rows.append(_metrics_row(cfg, center_lat, nc_path))
 
     metrics = pd.DataFrame(rows).sort_values(
         ['family', 'pattern', 'width', 'center_lat']).reset_index(drop=True)

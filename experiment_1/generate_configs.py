@@ -22,6 +22,7 @@ Families written:
   B  equator    equator-centred estimates:
                   - single diamond, 2deg (mooring-spanned) & 1deg (glider-spanned)
                   - single hexagon, 2deg (4 gliders) & 1deg (6 gliders)
+                  - single square/box, 2deg & 1deg (4 corner gliders)
                   - symmetric 3-cell array centred at -1/0/+1
   C  density    fixed centre (0.5N), gliders-per-cell swept 2/4/6 at each width
 
@@ -119,6 +120,20 @@ def _equator_hex_cell(off, half_height):
                            [-mid, LON - off], [-mid, LON + off]]}]
 
 
+def _equator_square_cell(off, half_height):
+    """Single equator-centred axis-aligned box (the diamond rotated to a square):
+    4 corner gliders at +/-half_height lat and +/-off lon. Unlike the diamond,
+    no corner sits on the LON line, so we add every real mooring on the line
+    within the box's latitude span as a free sample point (the centre for 1deg;
+    centre plus the +/-1 N/S moorings for 2deg) - the same moorings the matching
+    diamond uses. Sampling U at both +/-half latitudes gives extra du/dx info."""
+    corners = [[half_height, LON - off], [half_height, LON + off],
+               [-half_height, LON - off], [-half_height, LON + off]]
+    moor = [[ml, LON] for ml in MOORING_LATS
+            if -half_height - 1e-9 <= ml <= half_height + 1e-9]
+    return [{'center_lat': 0.0, 'positions': corners + moor}]
+
+
 def _equator_3cell(off):
     """Symmetric no-shift array: 2deg-tall diamonds centred at -1/0/+1. Each cell's
     centre mooring is supplied by _interior_moorings."""
@@ -173,6 +188,17 @@ def build():
                 cell_height_deg=2 * half,
                 description=(f'Equator-centred hexagon, {2 * half:g}deg tall, {ng} gliders, '
                              f'glider lon offset {off} deg, with centre mooring.'),
+                positions=_union_positions(cells), cells=cells)))
+
+        # single squares (diamond rotated to a box; 4 corner gliders)
+        for tag, half in (('sq2deg', 1.0), ('sq1deg', 0.5)):
+            cells = _with_interior_moorings(_equator_square_cell(off, half))
+            written.append(_write('equator', dict(
+                name=f'equator_{tag}_{wk}', family='equator', pattern=f'equator_{tag}',
+                width=off, n_gliders_per_cell=_n_gliders_total(cells),
+                n_gliders_total=_n_gliders_total(cells), cell_height_deg=2 * half,
+                description=(f'Equator-centred square (box), {2 * half:g}deg tall, 4 corner '
+                             f'gliders at glider lon offset {off} deg, with span moorings.'),
                 positions=_union_positions(cells), cells=cells)))
 
         # symmetric 3-cell array
