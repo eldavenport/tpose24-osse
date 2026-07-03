@@ -28,8 +28,8 @@ because they are intended to evaluate the error associated with different config
    - `data/<config>__cell_<center>.nc` — `w_est`, `w_model`, `bias` (dims time, depth)
    - `data/metrics.csv` — one row per cell with skill stats + config metadata
    Re-running skips cells whose `.nc` already exists (delete `data/` to recompute).
-3. `summary.ipynb` (run in place) — the 5 presentation figures → `summary_figs/`.
-4. `make_experiment_figs.ipynb` (run in place) — per-config diagnostics
+3. `summary.ipynb` — the 5 presentation figures → `summary_figs/`.
+4. `make_experiment_figs.ipynb` — per-config diagnostics
    (`w_comparison` Hovmöllers + `velocity_map`) → `experiment_figs/<config>/`.
 
 Skill metrics come from `osse_tools.w_skill_metrics` / `w_skill_by_depth`.
