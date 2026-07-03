@@ -1,0 +1,51 @@
+{
+  "name": "density_2g_w0.25",
+  "family": "density",
+  "pattern": "density_2g",
+  "width": 0.25,
+  "n_gliders_per_cell": 2,
+  "n_gliders_total": 2,
+  "cell_height_deg": 1.0,
+  "description": "Fixed centre 0.5N, 2 gliders/cell (rows [0.5]), glider lon offset 0.25 deg.",
+  "positions": [
+    [
+      0.0,
+      220.0
+    ],
+    [
+      1.0,
+      220.0
+    ],
+    [
+      0.5,
+      219.75
+    ],
+    [
+      0.5,
+      220.25
+    ]
+  ],
+  "cells": [
+    {
+      "center_lat": 0.5,
+      "positions": [
+        [
+          0.0,
+          220.0
+        ],
+        [
+          1.0,
+          220.0
+        ],
+        [
+          0.5,
+          219.75
+        ],
+        [
+          0.5,
+          220.25
+        ]
+      ]
+    }
+  ]
+}

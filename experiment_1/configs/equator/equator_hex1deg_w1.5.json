@@ -1,0 +1,75 @@
+{
+  "name": "equator_hex1deg_w1.5",
+  "family": "equator",
+  "pattern": "equator_hex1deg",
+  "width": 1.5,
+  "n_gliders_per_cell": 6,
+  "n_gliders_total": 6,
+  "cell_height_deg": 1.0,
+  "description": "Equator-centred hexagon, 1deg tall, 6 gliders, glider lon offset 1.5 deg, with centre mooring.",
+  "positions": [
+    [
+      0.5,
+      220.0
+    ],
+    [
+      -0.5,
+      220.0
+    ],
+    [
+      0.25,
+      218.5
+    ],
+    [
+      0.25,
+      221.5
+    ],
+    [
+      -0.25,
+      218.5
+    ],
+    [
+      -0.25,
+      221.5
+    ],
+    [
+      0.0,
+      220.0
+    ]
+  ],
+  "cells": [
+    {
+      "center_lat": 0.0,
+      "positions": [
+        [
+          0.5,
+          220.0
+        ],
+        [
+          -0.5,
+          220.0
+        ],
+        [
+          0.25,
+          218.5
+        ],
+        [
+          0.25,
+          221.5
+        ],
+        [
+          -0.25,
+          218.5
+        ],
+        [
+          -0.25,
+          221.5
+        ],
+        [
+          0.0,
+          220.0
+        ]
+      ]
+    }
+  ]
+}

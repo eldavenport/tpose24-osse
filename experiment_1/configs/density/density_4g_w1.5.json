@@ -1,0 +1,67 @@
+{
+  "name": "density_4g_w1.5",
+  "family": "density",
+  "pattern": "density_4g",
+  "width": 1.5,
+  "n_gliders_per_cell": 4,
+  "n_gliders_total": 4,
+  "cell_height_deg": 1.0,
+  "description": "Fixed centre 0.5N, 4 gliders/cell (rows [0.25, 0.75]), glider lon offset 1.5 deg.",
+  "positions": [
+    [
+      0.0,
+      220.0
+    ],
+    [
+      1.0,
+      220.0
+    ],
+    [
+      0.25,
+      218.5
+    ],
+    [
+      0.25,
+      221.5
+    ],
+    [
+      0.75,
+      218.5
+    ],
+    [
+      0.75,
+      221.5
+    ]
+  ],
+  "cells": [
+    {
+      "center_lat": 0.5,
+      "positions": [
+        [
+          0.0,
+          220.0
+        ],
+        [
+          1.0,
+          220.0
+        ],
+        [
+          0.25,
+          218.5
+        ],
+        [
+          0.25,
+          221.5
+        ],
+        [
+          0.75,
+          218.5
+        ],
+        [
+          0.75,
+          221.5
+        ]
+      ]
+    }
+  ]
+}

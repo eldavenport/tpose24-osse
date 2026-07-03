@@ -103,7 +103,9 @@ def main():
             key = _footprint_key(pos)
             w_model = w_model_cache[key]
             uv = uv_all.isel(glider=[pos_idx[(round(p[0], 6), round(p[1], 6))] for p in pos])
-            w_est = ot.compute_w_planefit(uv)['w_est']
+            # w=0 at the shallowest SAMPLED depth (MIN_DEPTH), not the surface, so
+            # w_est spans the same interfaces as w_model (which uses min_depth=MIN_DEPTH).
+            w_est = ot.compute_w_planefit(uv, extrapolate_to_surface=False)['w_est']
             bias = w_est - w_model
 
             xr.Dataset(dict(w_est=w_est, w_model=w_model, bias=bias)).to_netcdf(nc_path)

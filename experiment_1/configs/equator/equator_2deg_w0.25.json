@@ -1,0 +1,59 @@
+{
+  "name": "equator_2deg_w0.25",
+  "family": "equator",
+  "pattern": "equator_2deg",
+  "width": 0.25,
+  "n_gliders_per_cell": 2,
+  "n_gliders_total": 2,
+  "cell_height_deg": 2.0,
+  "description": "Equator-centred diamond, 2deg tall, glider lon offset 0.25 deg, with centre mooring.",
+  "positions": [
+    [
+      1.0,
+      220.0
+    ],
+    [
+      -1.0,
+      220.0
+    ],
+    [
+      0.0,
+      219.75
+    ],
+    [
+      0.0,
+      220.25
+    ],
+    [
+      0.0,
+      220.0
+    ]
+  ],
+  "cells": [
+    {
+      "center_lat": 0.0,
+      "positions": [
+        [
+          1.0,
+          220.0
+        ],
+        [
+          -1.0,
+          220.0
+        ],
+        [
+          0.0,
+          219.75
+        ],
+        [
+          0.0,
+          220.25
+        ],
+        [
+          0.0,
+          220.0
+        ]
+      ]
+    }
+  ]
+}
