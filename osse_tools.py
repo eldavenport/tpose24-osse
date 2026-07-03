@@ -482,6 +482,7 @@ def w_skill_metrics(w_est, w_model, depth_range=None):
         corr        Pearson correlation of w_est and w_model over (time, depth)
         w_est_std   std of w_est [m/s]
         w_model_std std of w_model, i.e. the signal being estimated [m/s]
+        w_model_mean mean of w_model, i.e. the mean vertical velocity [m/s]
         norm_rms    rms / w_model_std (error relative to the signal); NaN if signal std is 0
         n           number of finite sample pairs used
     """
@@ -507,9 +508,34 @@ def w_skill_metrics(w_est, w_model, depth_range=None):
         corr=corr,
         w_est_std=est_std,
         w_model_std=mod_std,
+        w_model_mean=float(mod.mean()) if mod.size else np.nan,
         norm_rms=rms / mod_std if mod_std and mod_std > 0 else np.nan,
         n=int(est.size),
     )
+
+
+def frac_mean_bias(mean_bias, w_model_mean, alpha=0.05):
+    """
+    Fractional error in the time-mean w: (<w_est> - <w_model>) / <w_model>, i.e.
+    mean_bias / w_model_mean. Perfect estimate = 0.
+
+    Guarded against the mean's zero-crossings: the ratio is undefined where the
+    denominator passes through zero, so any point whose |w_model_mean| is below
+    alpha times the peak |w_model_mean| of the set is returned as NaN (the line
+    simply breaks there rather than spiking to +/-inf). The threshold is relative
+    to the mean's OWN scale, not the signal std, because |mean w| is typically
+    tens of times smaller than sigma here.
+
+    Accepts scalars, numpy arrays, or xarray/pandas objects (compared point-wise
+    across a depth profile or a config sweep); returns a numpy array (or scalar).
+    """
+    mean_bias    = np.asarray(mean_bias, float)
+    w_model_mean = np.asarray(w_model_mean, float)
+    peak = np.nanmax(np.abs(w_model_mean))
+    tau  = alpha * peak if np.isfinite(peak) else 0.0
+    with np.errstate(divide='ignore', invalid='ignore'):
+        out = mean_bias / w_model_mean
+    return np.where(np.abs(w_model_mean) >= tau, out, np.nan)
 
 
 def w_skill_by_depth(w_est, w_model):
@@ -521,7 +547,8 @@ def w_skill_by_depth(w_est, w_model):
     Returns
     -------
     xr.Dataset, dim (depth)
-        rms, mean_bias, corr, w_est_std, w_model_std, norm_rms
+        rms, mean_bias, corr, w_est_std, w_model_std, norm_rms,
+        w_est_mean, w_model_mean
     """
     bias      = w_est - w_model
     rms       = np.sqrt((bias ** 2).mean('time'))
@@ -538,6 +565,8 @@ def w_skill_by_depth(w_est, w_model):
         w_est_std=est_std,
         w_model_std=mod_std,
         norm_rms=rms / mod_std,
+        w_est_mean=w_est.mean('time'),
+        w_model_mean=w_model.mean('time'),
     ))
 
 
