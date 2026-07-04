@@ -42,19 +42,24 @@ Skill metrics come from `osse_tools.w_skill_metrics` / `w_skill_by_depth`.
    does the design matter?)
 2. `fig2_skill_vs_width` — skill vs glider lon offset; colour = estimate centre
    latitude, linestyle/marker = method (one line per method × location).
-   `fig2a–2d` break this out one method per figure, each coloured by the parameter
-   it tunes and carrying a platform-layout panel (squares=moorings, circles=gliders):
-   `2a` shift array (4 cell latitudes), `2b` equator 3-cell (centre lat), `2c`
-   density (gliders-per-cell), `2d` equator single-cell (diamond / hexagon / square
-   × 1°/2° tall; colour = shape, linestyle = height, no markers). Multi-cell arrays
-   (2a, 2b) draw the cells stacked; single-cell alternatives (2c, 2d) side by side.
+   `fig2a–2d` break this out one method per figure as a 2×4 grid that separates the
+   mean from the fluctuations, coloured by the parameter each method tunes, with a
+   colour/style legend across the top (no suptitle). Row 1: mean upwelling ⟨w⟩
+   (m day⁻¹), mean bias / σ_y, mean bias / ⟨w⟩, and an estimated-vs-true mean scatter
+   (1:1 line). Row 2: σ_x/σ_y (est/model amplitude), correlation r, relative error
+   RMS/σ_y, and a platform-layout panel (squares=moorings, circles=gliders). The
+   w-dimensioned panels (⟨w⟩, scatter) are drawn in m day⁻¹. `2a` shift array (4 cell
+   latitudes), `2b` equator 3-cell (centre lat), `2c` density (gliders-per-cell),
+   `2d` equator single-cell (diamond / hexagon / square × 1°/2° tall; colour = shape,
+   linestyle = height, scatter marker = height). Multi-cell arrays (2a, 2b) draw the
+   cells stacked; single-cell alternatives (2c, 2d) side by side.
 3. `fig3_skill_vs_latitude` — skill vs cell latitude for the two multi-cell arrays
    (4-cell shift, equator 3-cell), one line per glider offset.
 4. `fig4_skill_vs_gliders` — skill vs gliders-per-cell at fixed centre 0.5°N.
 5. `fig5a–5d` — skill vs depth, one method per figure, coloured by that method's
    tunable parameter (parallels `fig2a–2d`): `5a` shift, `5b` equator 3-cell,
    `5c` density, `5d` equator single-cell (diamond / hexagon / square × 1°/2°).
-6. `fig6_metric_heatmaps` — ML-style "colored squares" summarising every config in
+6. `fig6_metric_heatmaps` — heatmaps summarising every config in
    one view: rows = estimate cell (pattern @ centre latitude, grouped by family),
    columns = glider lon offset (width), three panels for RMS/σ, correlation, and
    mean bias / ⟨w⟩ (same `frac_mean_bias` normalisation as fig2–5). Colour is a
