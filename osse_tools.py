@@ -482,6 +482,7 @@ def w_skill_metrics(w_est, w_model, depth_range=None):
         corr        Pearson correlation of w_est and w_model over (time, depth)
         w_est_std   std of w_est [m/s]
         w_model_std std of w_model, i.e. the signal being estimated [m/s]
+        w_est_mean  mean of w_est, i.e. the estimated mean vertical velocity [m/s]
         w_model_mean mean of w_model, i.e. the mean vertical velocity [m/s]
         norm_rms    rms / w_model_std (error relative to the signal); NaN if signal std is 0
         n           number of finite sample pairs used
@@ -508,6 +509,7 @@ def w_skill_metrics(w_est, w_model, depth_range=None):
         corr=corr,
         w_est_std=est_std,
         w_model_std=mod_std,
+        w_est_mean=float(est.mean()) if est.size else np.nan,
         w_model_mean=float(mod.mean()) if mod.size else np.nan,
         norm_rms=rms / mod_std if mod_std and mod_std > 0 else np.nan,
         n=int(est.size),
