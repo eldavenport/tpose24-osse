@@ -54,3 +54,13 @@ Skill metrics come from `osse_tools.w_skill_metrics` / `w_skill_by_depth`.
 5. `fig5a–5d` — skill vs depth, one method per figure, coloured by that method's
    tunable parameter (parallels `fig2a–2d`): `5a` shift, `5b` equator 3-cell,
    `5c` density, `5d` equator single-cell (diamond / hexagon / square × 1°/2°).
+6. `fig6_metric_heatmaps` — ML-style "colored squares" summarising every config in
+   one view: rows = estimate cell (pattern @ centre latitude, grouped by family),
+   columns = glider lon offset (width), three panels for RMS/σ, correlation, and
+   mean bias / ⟨w⟩ (same `frac_mean_bias` normalisation as fig2–5). Colour is a
+   scan aid on the printed value (sequential light = good → dark = poor; diverging
+   white = unbiased). Lets visual patterns across the sweep jump out at a glance.
+   `fig6a–6d` break the same grid out one method per figure (same split as
+   `fig2a–2d`/`fig5a–5d`): `6a` shift, `6b` equator 3-cell, `6c` density, `6d`
+   equator single-cell. Each sub-figure auto-scales its own colour range (read
+   colour within a figure); the printed values stay comparable to `fig6`.

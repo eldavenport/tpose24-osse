@@ -12,6 +12,6 @@ use configs from experiment_1/configs/
    - `data/<config>__cell_<center>.nc` — `w_est`, `w_model`, `bias` (dims time, depth)
    - `data/metrics.csv` — one row per cell with skill stats + config metadata
    Re-running skips cells whose `.nc` already exists (delete `data/` to recompute).
-3. `summary.ipynb` — the 5 presentation figures → `summary_figs/`.
+3. `summary.ipynb` — the 6 presentation figures (adds `fig6_metric_heatmaps`, the colored-square metric grid, plus `fig6a–6d` breaking it out one method per figure like `fig2a–2d`/`fig5a–5d`) → `summary_figs/`.
 4. `make_experiment_figs.ipynb` — per-config diagnostics
    (`w_comparison` Hovmöllers + `velocity_map`) → `experiment_figs/<config>/`.
