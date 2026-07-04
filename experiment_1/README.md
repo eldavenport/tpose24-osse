@@ -10,8 +10,8 @@ by the signal std, correlation, bias;
 | family    | what it varies | cells |
 |-----------|----------------|-------|
 | `shift`   | one 4-cell array of 1° diamonds, glider lon offset 0.25–2.0 | −1.5, −0.5, 0.5, 1.5 |
-| `equator` | equator-centred estimates: diamonds `2deg`/`1deg`, hexagons `hex2deg` (4 gliders) / `hex1deg` (6 gliders), squares `sq2deg`/`sq1deg` (4 corner gliders, the diamond as an axis-aligned box for extra du/dx info), and `3cell` (symmetric array at −1/0/+1) | 0, or −1/0/+1 |
-| `density` | fixed centre 0.5°N, gliders-per-cell = 2/4/6 at each width | 0.5 |
+| `equator` | equator-centered estimates: diamonds `2deg`/`1deg`, hexagons `hex2deg` (4 gliders) / `hex1deg` (6 gliders), squares `sq2deg`/`sq1deg` (4 corner gliders, the diamond as an axis-aligned box for extra du/dx info), and `3cell` (symmetric array at −1/0/+1) | 0, or −1/0/+1 |
+| `density` | fixed center 0.5°N, gliders-per-cell = 2/4/6 at each width | 0.5 |
 
 TAO moorings are on the 140°W line (lon 220) at lat {−2,−1,0,1,2}; Any mooring interior to a 
 cell is added as a free sample point (`_interior_moorings`), so the plane-fit estimate uses it. 
@@ -29,7 +29,7 @@ because they are intended to evaluate the error associated with different config
    - `data/metrics.csv` — one row per cell with skill stats + config metadata
    Re-running recomputes every cell from scratch (results are deterministic, so
    existing configs come out identical) and rewrites all `data/*.nc` + `metrics.csv`.
-3. `summary.ipynb` — the 5 presentation figures → `summary_figs/`.
+3. `summary.ipynb` — the presentation figures → `summary_figs/`.
 4. `make_experiment_figs.ipynb` — per-config diagnostics
    (`w_comparison` Hovmöllers + `velocity_map`) → `experiment_figs/<config>/`.
 
@@ -37,35 +37,52 @@ Skill metrics come from `osse_tools.w_skill_metrics` / `w_skill_by_depth`.
 
 ## Presentation figures (`summary_figs/`)
 
-1. `fig1_skill_overview` — normalized error distribution per config cell, split
-   by array family, coloured by width, with a no-skill reference. (How good, and
-   does the design matter?)
-2. `fig2_skill_vs_width` — skill vs glider lon offset; colour = estimate centre
+The line/heatmap figures below all report the same six "line-able" skill metrics
+as the fig2a–2d grid (minus its scatter/geometry panels): mean upwelling ⟨w⟩
+(m day⁻¹), mean bias / σ_y, mean bias / ⟨w⟩, σ_x/σ_y (est/model amplitude),
+correlation r, and relative error RMS/σ_y. The shared `_plot6`/`_label6` helpers
+(defined in the fig1 cell) lay them out in a 2×3 grid in that order, and **every
+figure uses the same panel order as figure 2**. The mean-upwelling panel plots
+both the **estimate (solid) and the model truth (dotted)**; in the fig6 heatmaps
+that panel instead shows the ratio estimated ⟨w⟩ / model ⟨w⟩ (1 = matched).
+Legends sit across the top of each figure (no suptitles / method labels), and the
+mean-recovery scatters carry their own in-panel legend for the markers they use.
+
+1. `fig1_skill_overview` — distribution of each of the six metrics per config cell,
+   split by array family, colored by width (2×3 strip plots; bar = family median).
+   (How good, and does the design matter?)
+2. `fig2_skill_vs_width` — skill vs glider lon offset; color = estimate center
    latitude, linestyle/marker = method (one line per method × location).
    `fig2a–2d` break this out one method per figure as a 2×4 grid that separates the
-   mean from the fluctuations, coloured by the parameter each method tunes, with a
-   colour/style legend across the top (no suptitle). Row 1: mean upwelling ⟨w⟩
-   (m day⁻¹), mean bias / σ_y, mean bias / ⟨w⟩, and an estimated-vs-true mean scatter
-   (1:1 line). Row 2: σ_x/σ_y (est/model amplitude), correlation r, relative error
+   mean from the fluctuations, colored by the parameter each method tunes, with a
+   color/style legend across the top (no suptitle). Row 1: mean upwelling ⟨w⟩
+   (est + true, m day⁻¹), mean bias / σ_y, mean bias / ⟨w⟩, and an estimated-vs-true
+   mean scatter (1:1 line, own legend). Row 2: σ_x/σ_y (est/model amplitude), correlation r, relative error
    RMS/σ_y, and a platform-layout panel (squares=moorings, circles=gliders). The
    w-dimensioned panels (⟨w⟩, scatter) are drawn in m day⁻¹. `2a` shift array (4 cell
-   latitudes), `2b` equator 3-cell (centre lat), `2c` density (gliders-per-cell),
-   `2d` equator single-cell (diamond / hexagon / square × 1°/2° tall; colour = shape,
+   latitudes), `2b` equator 3-cell (center lat), `2c` density (gliders-per-cell),
+   `2d` equator single-cell (diamond / hexagon / square × 1°/2° tall; color = shape,
    linestyle = height, scatter marker = height). Multi-cell arrays (2a, 2b) draw the
    cells stacked; single-cell alternatives (2c, 2d) side by side.
 3. `fig3_skill_vs_latitude` — skill vs cell latitude for the two multi-cell arrays
-   (4-cell shift, equator 3-cell), one line per glider offset.
-4. `fig4_skill_vs_gliders` — skill vs gliders-per-cell at fixed centre 0.5°N.
-5. `fig5a–5d` — skill vs depth, one method per figure, coloured by that method's
+   (4-cell shift, equator 3-cell), one line per glider offset; six metric rows ×
+   two array columns (each metric shares its y-scale across the two arrays).
+4. `fig4_skill_vs_gliders` — skill vs gliders-per-cell at fixed center 0.5°N (2×3
+   metric grid).
+5. `fig5a–5d` — skill vs depth, one method per figure, colored by that method's
    tunable parameter (parallels `fig2a–2d`): `5a` shift, `5b` equator 3-cell,
-   `5c` density, `5d` equator single-cell (diamond / hexagon / square × 1°/2°).
-6. `fig6_metric_heatmaps` — heatmaps summarising every config in
-   one view: rows = estimate cell (pattern @ centre latitude, grouped by family),
-   columns = glider lon offset (width), three panels for RMS/σ, correlation, and
-   mean bias / ⟨w⟩ (same `frac_mean_bias` normalisation as fig2–5). Colour is a
-   scan aid on the printed value (sequential light = good → dark = poor; diverging
-   white = unbiased). Lets visual patterns across the sweep jump out at a glance.
+   `5c` density, `5d` equator single-cell (diamond / hexagon / square × 1°/2°). A
+   2×4 depth grid in figure-2 order: mean ⟨w⟩ (est + true), mean bias/σ_y, mean
+   bias/⟨w⟩, and an absolute RMS-vs-signal-σ diagnostic; then σ_x/σ_y, correlation,
+   RMS/σ_y (the absolute panel stays in raw m s⁻¹, the rest are dimensionless/ratios).
+6. `fig6_metric_heatmaps` — heatmaps summarizing every config in
+   one view: rows = estimate cell (pattern @ center latitude, grouped by family),
+   columns = glider lon offset (width), one panel per metric (2×3, figure-2 order):
+   est ⟨w⟩ / model ⟨w⟩, mean bias/σ_y, mean bias/⟨w⟩, σ_x/σ_y, correlation, RMS/σ_y.
+   Color is a scan aid on the printed value (sequential light = good → dark = poor
+   for correlation & RMS; diverging white = ideal — 1 for the two ratios, 0 for the
+   biases). Lets visual patterns across the sweep jump out at a glance.
    `fig6a–6d` break the same grid out one method per figure (same split as
    `fig2a–2d`/`fig5a–5d`): `6a` shift, `6b` equator 3-cell, `6c` density, `6d`
-   equator single-cell. Each sub-figure auto-scales its own colour range (read
-   colour within a figure); the printed values stay comparable to `fig6`.
+   equator single-cell. Each sub-figure auto-scales its own color range (read
+   color within a figure); the printed values stay comparable to `fig6`.
