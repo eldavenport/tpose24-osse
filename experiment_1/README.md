@@ -9,7 +9,7 @@ by the signal std, correlation, bias;
 
 | family    | what it varies | cells |
 |-----------|----------------|-------|
-| `shift`   | one 4-cell array of 1° diamonds, glider lon offset 0.25–2.0 | −1.5, −0.5, 0.5, 1.5 |
+| `shift`   | one 4-cell array, glider lon offset 0.25–2.0, as 1° diamonds (`shift`) or 1° hexagons (`shift_hex`, 4 side gliders/cell → 16 gliders total, well over the field budget but useful for comparing the two cell shapes) | −1.5, −0.5, 0.5, 1.5 |
 | `equator` | equator-centered estimates: diamonds `2deg`/`1deg`, hexagons `hex2deg` (4 gliders) / `hex1deg` (6 gliders), squares `sq2deg`/`sq1deg` (4 corner gliders, the diamond as an axis-aligned box for extra du/dx info), and `3cell` (symmetric array at −1/0/+1) | 0, or −1/0/+1 |
 | `density` | fixed center 0.5°N, gliders-per-cell = 2/4/6 at each width | 0.5 |
 
@@ -21,7 +21,7 @@ because they are intended to evaluate the error associated with different config
 
 ## Pipeline
 
-1. `python generate_configs.py` — writes all 66 configs under `configs/`.
+1. `python generate_configs.py` — writes all 72 configs under `configs/`.
 2. `python run_experiment.py` — opens the model once, samples U,V at every glider
    position, computes plane-fit `w_est` and hull-mean model-truth `w_model` per
    cell, and writes:
@@ -60,18 +60,19 @@ mean-recovery scatters carry their own in-panel legend for the markers they use.
    mean scatter (1:1 line, own legend). Row 2: σ_x/σ_y (est/model amplitude), correlation r, relative error
    RMS/σ_y, and a platform-layout panel (squares=moorings, circles=gliders). The
    w-dimensioned panels (⟨w⟩, scatter) are drawn in m day⁻¹. `2a` shift array (4 cell
-   latitudes), `2b` equator 3-cell (center lat), `2c` density (gliders-per-cell),
-   `2d` equator single-cell (diamond / hexagon / square × 1°/2° tall; color = shape,
-   linestyle = height, scatter marker = height). Multi-cell arrays (2a, 2b) draw the
-   cells stacked; single-cell alternatives (2c, 2d) side by side.
-3. `fig3_skill_vs_latitude` — skill vs cell latitude for the two multi-cell arrays
-   (4-cell shift, equator 3-cell), one line per glider offset; six metric rows ×
-   two array columns (each metric shares its y-scale across the two arrays).
+   latitudes), `2e` shift-hex array (same 4-cell framework, 1° hexagons — parallels
+   `2a` for direct comparison), `2b` equator 3-cell (center lat), `2c` density
+   (gliders-per-cell), `2d` equator single-cell (diamond / hexagon / square × 1°/2°
+   tall; color = shape, linestyle = height, scatter marker = height). Multi-cell
+   arrays (2a, 2e, 2b) draw the cells stacked; single-cell alternatives (2c, 2d) side by side.
+3. `fig3_skill_vs_latitude` — skill vs cell latitude for the three multi-cell arrays
+   (4-cell shift, 4-cell shift-hex, equator 3-cell), one line per glider offset; six
+   metric rows × three array columns (each metric shares its y-scale across the arrays).
 4. `fig4_skill_vs_gliders` — skill vs gliders-per-cell at fixed center 0.5°N (2×3
    metric grid).
-5. `fig5a–5d` — skill vs depth, one method per figure, colored by that method's
-   tunable parameter (parallels `fig2a–2d`): `5a` shift, `5b` equator 3-cell,
-   `5c` density, `5d` equator single-cell (diamond / hexagon / square × 1°/2°). A
+5. `fig5a–5e` — skill vs depth, one method per figure, colored by that method's
+   tunable parameter (parallels `fig2a–2e`): `5a` shift, `5e` shift-hex, `5b` equator
+   3-cell, `5c` density, `5d` equator single-cell (diamond / hexagon / square × 1°/2°). A
    2×4 depth grid in figure-2 order: mean ⟨w⟩ (est + true), mean bias/σ_y, mean
    bias/⟨w⟩, and an absolute RMS-vs-signal-σ diagnostic; then σ_x/σ_y, correlation,
    RMS/σ_y (the absolute panel stays in raw m s⁻¹, the rest are dimensionless/ratios).
@@ -82,7 +83,7 @@ mean-recovery scatters carry their own in-panel legend for the markers they use.
    Color is a scan aid on the printed value (sequential light = good → dark = poor
    for correlation & RMS; diverging white = ideal — 1 for the two ratios, 0 for the
    biases). Lets visual patterns across the sweep jump out at a glance.
-   `fig6a–6d` break the same grid out one method per figure (same split as
-   `fig2a–2d`/`fig5a–5d`): `6a` shift, `6b` equator 3-cell, `6c` density, `6d`
-   equator single-cell. Each sub-figure auto-scales its own color range (read
-   color within a figure); the printed values stay comparable to `fig6`.
+   `fig6a–6e` break the same grid out one method per figure (same split as
+   `fig2a–2e`/`fig5a–5e`): `6a` shift, `6b` equator 3-cell, `6c` density, `6d`
+   equator single-cell, `6e` shift-hex. Each sub-figure auto-scales its own color
+   range (read color within a figure); the printed values stay comparable to `fig6`.

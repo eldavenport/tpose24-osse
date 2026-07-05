@@ -39,7 +39,7 @@ PAT_STYLE = {                                    # combined fig2: (linestyle, ma
     "equator_3cell":   ("-",  "s"),
     "equator_hex1deg": ("--", "D"), "equator_hex2deg": (":", "D"),
     "equator_sq1deg":  ("--", "P"), "equator_sq2deg":  (":", "P"),
-    "shift":           ("-",  "^"),
+    "shift":           ("-",  "^"), "shift_hex":       ("-",  "H"),
 }
 # equator single-cell: color = SHAPE, height encoded by linestyle (summary, where
 # experiment is fixed) or by marker (compare, where linestyle = experiment).
@@ -187,6 +187,32 @@ def stacked_cells_panel(ax, cells, half, title, off_demo=0.5):
     ax.set_title(title); ax.grid(alpha=0.2, axis="y")
 
 
+def stacked_hex_cells_panel(ax, cells, half, title, off_demo=0.5):
+    """Vertical stack of hexagon cells (the shift-hex array). Color = center lat.
+    N/S vertices sit on the mooring line at center +/-half; 4 side gliders at
+    +/-off_demo lon and +/-half/2 lat (mirrors stacked_cells_panel for diamonds)."""
+    mid = half / 2.0
+    vlats = sorted({c + s * half for c in cells for s in (-1, 1)} | set(cells))
+    moor = [v for v in vlats if abs(v - round(v)) < 1e-9]
+    ax.plot([0, 0], [min(vlats), max(vlats)], color="0.8", lw=0.8, zorder=1)
+    ax.plot([0] * len(moor), moor, marker="s", ls="", color="0.55", ms=6, zorder=3)
+    for c in cells:
+        col = LAT_COLORS[c]
+        gl = [(s * off_demo, c + t * mid) for s in (-1, 1) for t in (-1, 1)]
+        ax.plot([p[0] for p in gl], [p[1] for p in gl], marker="o", ls="", color=col,
+                ms=6, mec="k", mew=0.3, zorder=4)
+        poly = _hull_poly([(0, c + half), (off_demo, c + mid), (off_demo, c - mid),
+                           (0, c - half), (-off_demo, c - mid), (-off_demo, c + mid)])
+        ax.plot(poly[:, 0], poly[:, 1], "-", color=col, lw=1.8, zorder=2)
+        ax.fill(poly[:, 0], poly[:, 1], color=col, alpha=0.07, zorder=0)
+        ax.text(off_demo + 0.16, c, f"{c:+.1f}", va="center", ha="left", fontsize=7, color=col)
+    _layout_legend(ax, loc="upper right")
+    ax.set_aspect("equal"); ax.set_xlim(-1.0, 2.0)
+    ax.set_ylim(min(vlats) - 0.4, max(vlats) + 0.4)
+    ax.set_xticks([]); ax.set_yticks(moor); ax.set_ylabel("lat (deg)")
+    ax.set_title(title); ax.grid(alpha=0.2, axis="y")
+
+
 def density_geometry_panel(ax, off_demo=0.5):
     """Layouts of the 2/4/6-glider cells (center +0.5). Hull colored to match lines."""
     rows_by_ng = {2: [0.5], 4: [0.25, 0.75], 6: [0.25, 0.5, 0.75]}
@@ -249,7 +275,7 @@ PAT_LABEL = {
     "equator_1deg": "diamond 1°", "equator_2deg": "diamond 2°",
     "equator_hex1deg": "hexagon 1°", "equator_hex2deg": "hexagon 2°",
     "equator_sq1deg": "square 1°", "equator_sq2deg": "square 2°",
-    "equator_3cell": "3-cell", "shift": "shift",
+    "equator_3cell": "3-cell", "shift": "shift", "shift_hex": "shift hex",
 }
 ORDER = [
     ("density_2g", 0.5), ("density_4g", 0.5), ("density_6g", 0.5),
@@ -258,6 +284,7 @@ ORDER = [
     ("equator_sq1deg", 0.0), ("equator_sq2deg", 0.0),
     ("equator_3cell", -1.0), ("equator_3cell", 0.0), ("equator_3cell", 1.0),
     ("shift", -1.5), ("shift", -0.5), ("shift", 0.5), ("shift", 1.5),
+    ("shift_hex", -1.5), ("shift_hex", -0.5), ("shift_hex", 0.5), ("shift_hex", 1.5),
 ]
 EQS_ROWS = ["equator_1deg", "equator_2deg", "equator_hex1deg",
             "equator_hex2deg", "equator_sq1deg", "equator_sq2deg"]
@@ -266,16 +293,21 @@ SUB_ORDERS = [                                   # (tag, order) one method per f
     ("6b_equator3cell",   [o for o in ORDER if o[0] == "equator_3cell"]),
     ("6c_density",        [o for o in ORDER if o[0].startswith("density")]),
     ("6d_equator_single", [o for o in ORDER if o[0] in EQS_ROWS]),
+    ("6e_shift_hex",      [o for o in ORDER if o[0] == "shift_hex"]),
 ]
 
 
 def row_label(pat, lat):
     base = PAT_LABEL.get(pat, pat)
-    return f"{base} {lat:+.1f}°" if pat in ("equator_3cell", "shift") else base
+    return f"{base} {lat:+.1f}°" if pat in ("equator_3cell", "shift", "shift_hex") else base
 
 
 def _fam(pat):
-    return "density" if pat.startswith("density") else "shift" if pat == "shift" else "equator"
+    if pat.startswith("density"):
+        return "density"
+    if pat in ("shift", "shift_hex"):
+        return pat
+    return "equator"
 
 
 def grid_from_col(df, col, order):
@@ -399,8 +431,10 @@ def make_fig2_combined(m, sumdir):
 def make_fig2abcd(m, sumdir):
     """fig2a-2d: skill vs width, one method per figure, as a 2x4 mean/fluctuation grid."""
     panels = [
-        ("2a_shift", m.family == "shift", "center_lat", LAT_COLORS, "cell center lat", _lat_lbl,
+        ("2a_shift", m.pattern == "shift", "center_lat", LAT_COLORS, "cell center lat", _lat_lbl,
          lambda ax: stacked_cells_panel(ax, [-1.5, -0.5, 0.5, 1.5], 0.5, "array layout (offset = 0.5 deg)")),
+        ("2e_shift_hex", m.pattern == "shift_hex", "center_lat", LAT_COLORS, "cell center lat", _lat_lbl,
+         lambda ax: stacked_hex_cells_panel(ax, [-1.5, -0.5, 0.5, 1.5], 0.5, "array layout (offset = 0.5 deg)")),
         ("2b_equator3cell", m.pattern == "equator_3cell", "center_lat", LAT_COLORS, "cell center lat", _lat_lbl,
          lambda ax: stacked_cells_panel(ax, [-1.0, 0.0, 1.0], 1.0, "array layout (offset = 0.5 deg)")),
         ("2c_density", m.family == "density", "n_gliders_cell", GLIDER_COLORS, "gliders/cell",
@@ -458,8 +492,10 @@ def make_fig2abcd(m, sumdir):
 
 def make_fig3(m, sumdir):
     """Skill vs cell latitude for the two multi-cell arrays (6 metric rows x 2 arrays)."""
-    lat_arrays = [("shift", "Shift array (4 cells)"), ("equator_3cell", "Equator 3-cell array")]
-    fig, axes = plt.subplots(len(METRIC6), 2, figsize=(12, 20), sharex=True, sharey="row")
+    lat_arrays = [("shift", "Shift array (4 cells)"),
+                  ("shift_hex", "Shift-hex array (4 cells)"),
+                  ("equator_3cell", "Equator 3-cell array")]
+    fig, axes = plt.subplots(len(METRIC6), 3, figsize=(17, 20), sharex=True, sharey="row")
     for j, (pat, ptitle) in enumerate(lat_arrays):
         d = m[m.pattern == pat]
         for w, dd in d.groupby("width"):
@@ -473,7 +509,7 @@ def make_fig3(m, sumdir):
         axes[-1, j].set_xlabel("cell center lat (deg)")
     for k, (fn, ylab, ref) in enumerate(METRIC6):
         axes[k, 0].set_ylabel(ylab)
-        for j in (0, 1):
+        for j in range(axes.shape[1]):
             axes[k, j].grid(alpha=0.3)
             if ref is not None:
                 axes[k, j].axhline(ref, color="0.5", lw=0.8)
@@ -548,7 +584,8 @@ def make_fig5(m, sumdir, load_cell):
         fig.savefig(os.path.join(sumdir, f"fig{tag}.png"), dpi=150, bbox_inches="tight")
         plt.show()
 
-    for tag, pat in (("5a_shift", "shift"), ("5b_equator3cell", "equator_3cell")):
+    for tag, pat in (("5a_shift", "shift"), ("5e_shift_hex", "shift_hex"),
+                     ("5b_equator3cell", "equator_3cell")):
         d = m[(m.pattern == pat) & W]
         rs = [(d[np.isclose(d.center_lat, lat)].iloc[0],
                dict(color=LAT_COLORS[lat], ls="-", lbl=f"{lat:+.1f}"))
@@ -623,8 +660,10 @@ _EXP_FILL = [Line2D([0], [0], ls="", marker="o", mfc="0.4", mec="0.4", ms=8, lab
 def make_fig2abcd_compare(M, outdir):
     """fig2a-2d comparison: exp1 (solid/filled) vs exp2 (dashed/open) on a 2x4 grid."""
     panels = [
-        ("2a_shift", lambda mm: mm.family == "shift", "center_lat", LAT_COLORS, "cell center lat", _lat_lbl,
+        ("2a_shift", lambda mm: mm.pattern == "shift", "center_lat", LAT_COLORS, "cell center lat", _lat_lbl,
          lambda ax: stacked_cells_panel(ax, [-1.5, -0.5, 0.5, 1.5], 0.5, "array layout (offset = 0.5deg)")),
+        ("2e_shift_hex", lambda mm: mm.pattern == "shift_hex", "center_lat", LAT_COLORS, "cell center lat", _lat_lbl,
+         lambda ax: stacked_hex_cells_panel(ax, [-1.5, -0.5, 0.5, 1.5], 0.5, "array layout (offset = 0.5deg)")),
         ("2b_equator3cell", lambda mm: mm.pattern == "equator_3cell", "center_lat", LAT_COLORS, "cell center lat", _lat_lbl,
          lambda ax: stacked_cells_panel(ax, [-1.0, 0.0, 1.0], 1.0, "array layout (offset = 0.5deg)")),
         ("2c_density", lambda mm: mm.family == "density", "n_gliders_cell", GLIDER_COLORS, "gliders/cell",
@@ -742,7 +781,8 @@ def make_fig5_compare(M, outdir, load_cell):
         fig.savefig(os.path.join(outdir, f"fig{tag}_compare.png"), dpi=150, bbox_inches="tight")
         plt.show()
 
-    for tag, pat in (("5a_shift", "shift"), ("5b_equator3cell", "equator_3cell")):
+    for tag, pat in (("5a_shift", "shift"), ("5e_shift_hex", "shift_hex"),
+                     ("5b_equator3cell", "equator_3cell")):
         rows_by_exp = {}
         for exp in (1, 2):
             d = M[exp][(M[exp].pattern == pat) & np.isclose(M[exp].width, depth_width)]

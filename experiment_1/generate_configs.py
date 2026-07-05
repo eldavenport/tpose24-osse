@@ -18,7 +18,8 @@ Top-level metadata (family, width, gliders-per-cell, cell height) is copied into
 the metrics table by run_experiment.py, so it must stay accurate here.
 
 Families written:
-  A  shift      one 4-cell array of 1deg diamonds centred at [-1.5,-0.5,0.5,1.5]
+  A  shift      one 4-cell array of 1deg diamonds centred at [-1.5,-0.5,0.5,1.5],
+                plus the same 4-cell framework as 1deg hexagons (pattern shift_hex)
   B  equator    equator-centred estimates:
                   - single diamond, 2deg (mooring-spanned) & 1deg (glider-spanned)
                   - single hexagon, 2deg (4 gliders) & 1deg (6 gliders)
@@ -120,6 +121,21 @@ def _equator_hex_cell(off, half_height):
                            [-mid, LON - off], [-mid, LON + off]]}]
 
 
+def _shift_hex_cells(centers, off):
+    """The shift array as hexagons instead of diamonds: 1deg-tall hexagons centred
+    at `centers`. N/S vertices sit on the LON line at center +/-0.5 (real moorings
+    for the integer-straddling shift centers, so free), plus 4 side gliders at
+    +/-off longitude and +/-0.25 latitude. Same 4-cell framework as _shift_cells,
+    swapping the E/W diamond gliders for the hexagon's 4 side gliders (more du/dx
+    info at the cost of far more gliders than the 6-glider field budget)."""
+    mid = 0.25                                     # (center +/- 0.5) / 2
+    return [{'center_lat': c,
+             'positions': [[c + 0.5, LON], [c - 0.5, LON],
+                           [c + mid, LON - off], [c + mid, LON + off],
+                           [c - mid, LON - off], [c - mid, LON + off]]}
+            for c in centers]
+
+
 def _equator_square_cell(off, half_height):
     """Single equator-centred axis-aligned box (the diamond rotated to a square):
     4 corner gliders at +/-half_height lat and +/-off lon. Unlike the diamond,
@@ -165,6 +181,16 @@ def build():
             cell_height_deg=1.0,
             description=(f'4-cell shift array, 1deg diamonds centred at {shift_centers}, '
                          f'glider lon offset {off} deg.'),
+            positions=_union_positions(cells), cells=cells)))
+
+        # A'. the same 4-cell shift framework, but 1deg hexagons ------------
+        cells = _with_interior_moorings(_shift_hex_cells(shift_centers, off))
+        written.append(_write('shift', dict(
+            name=f'shift_hex_{wk}', family='shift', pattern='shift_hex',
+            width=off, n_gliders_per_cell=4, n_gliders_total=_n_gliders_total(cells),
+            cell_height_deg=1.0,
+            description=(f'4-cell shift array, 1deg hexagons centred at {shift_centers}, '
+                         f'glider lon offset {off} deg (4 side gliders per cell).'),
             positions=_union_positions(cells), cells=cells)))
 
         # B. equator-centred ---------------------------------------------
