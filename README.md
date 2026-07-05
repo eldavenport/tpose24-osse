@@ -3,6 +3,19 @@
 Observing System Simulation Experiment (OSSE) for a wave-glider array in the
 equatorial Pacific, using TPOSE24 model output as truth.
 
+## Modules
+
+- **`osse_tools.py`** — computational core (sampling, plane-fit w, skill metrics,
+  distributions). No plotting.
+- **`plotting_tools.py`** — general diagnostic plotting moved out of `osse_tools`
+  (`plot_w_comparison`, `plot_velocity_map`, `plot_field_pdfs`, …) plus the
+  per-config experiment-figure loops (`render_w_comparisons`, `render_velocity_maps`)
+  shared by the `make_experiment_figs` notebooks. Imports computational helpers
+  from `osse_tools`.
+- **`summary_fig_tools.py`** — shared style, helpers, and `make_fig*` builders for
+  the W-skill summary figures; used by `experiment_*/summary.ipynb` and
+  `compare_exp_1_2` (each notebook just loads `metrics.csv` and calls the builders).
+
 `osse_tools.py` provides two workflows:
 
 - **Vertical velocity:** sample U, V at the glider array, fit a plane to get the
