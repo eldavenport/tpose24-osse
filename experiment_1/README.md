@@ -26,7 +26,10 @@ because they are intended to evaluate the error associated with different config
    position, computes plane-fit `w_est` and hull-mean model-truth `w_model` per
    cell, and writes:
    - `data/<config>__cell_<center>.nc` — `w_est`, `w_model`, `bias` (dims time, depth)
-   - `data/metrics.csv` — one row per cell with skill stats + config metadata
+   - `data/metrics.csv` — one row per cell with skill stats + config metadata,
+     including autocorrelation-aware standard errors of the time means
+     (`w_est_mean_se`, `w_model_mean_se`, `mean_bias_se`) and the effective sample
+     sizes / decorrelation time (`n_eff`, `n_eff_model`, `n_eff_est`, `tau`)
    Re-running recomputes every cell from scratch (results are deterministic, so
    existing configs come out identical) and rewrites all `data/*.nc` + `metrics.csv`.
 3. `summary.ipynb` — the presentation figures → `summary_figs/`.
@@ -87,3 +90,7 @@ mean-recovery scatters carry their own in-panel legend for the markers they use.
    `fig2a–2e`/`fig5a–5e`): `6a` shift, `6b` equator 3-cell, `6c` density, `6d`
    equator single-cell, `6e` shift-hex. Each sub-figure auto-scales its own color
    range (read color within a figure); the printed values stay comparable to `fig6`.
+7. `fig7a–7e` — the time-mean ⟨w⟩ with 95% confidence
+   intervals, to show how well the time-mean upwelling is resolved and recovered
+   
+   NOTE -- w decorrelates in ~1 day (8-13 3-hour samples)
