@@ -41,19 +41,20 @@ PAT_STYLE = {                                    # combined fig2: (linestyle, ma
     "equator_sq1deg":  ("--", "P"), "equator_sq2deg":  (":", "P"),
     "shift":           ("-",  "^"), "shift_hex":       ("-",  "H"),
 }
-# equator single-cell: color = SHAPE, height encoded by linestyle (summary, where
-# experiment is fixed) or by marker (compare, where linestyle = experiment).
+# equator single-cell: color = SHAPE, height (1° vs 2°) encoded by LINE WIDTH
+# (thin = 1°, thick = 2°). Linestyle is reserved for experiment (solid = exp1,
+# dashed = exp2) in the compare figures; single-experiment summaries draw solid.
+# Scatter panels (no line to thicken) carry height in marker size instead.
 EQS_SHAPE_COLOR = {"diamond": "#1f77b4", "hexagon": "#2ca02c", "square": "#d62728"}
-EQS_HEIGHT_LS   = {1.0: "-", 2.0: "--"}          # summary line height
-EQS_HEIGHT_MK   = {1.0: "o", 2.0: "s"}           # single-exp fig2d scatter marker
-_EQS_MK_CMP     = {1.0: "o", 2.0: "^"}           # compare marker (ls = experiment)
+EQS_HEIGHT_LW   = {1.0: 1.0, 2.0: 2.25}          # 1° thin, 2° thick
+EQS_HEIGHT_MS   = {1.0: 5.0, 2.0: 8.0}           # scatter marker size: small=1°, large=2°
 EQS_META = {                                     # pattern -> (shape, height_deg)
     "equator_1deg":    ("diamond", 1.0), "equator_2deg":    ("diamond", 2.0),
     "equator_hex1deg": ("hexagon", 1.0), "equator_hex2deg": ("hexagon", 2.0),
     "equator_sq1deg":  ("square",  1.0), "equator_sq2deg":  ("square",  2.0),
 }
-EQS_STYLE = {pat: dict(color=EQS_SHAPE_COLOR[sh], ls=EQS_HEIGHT_LS[h],
-                       mk=_EQS_MK_CMP[h], lbl=f"{h:g}° {sh}", shape=sh, height=h)
+EQS_STYLE = {pat: dict(color=EQS_SHAPE_COLOR[sh], lw=EQS_HEIGHT_LW[h],
+                       ms=EQS_HEIGHT_MS[h], lbl=f"{h:g}° {sh}", shape=sh, height=h)
              for pat, (sh, h) in EQS_META.items()}
 EQS_PATS = ["equator_1deg", "equator_2deg", "equator_hex1deg", "equator_hex2deg",
             "equator_sq1deg", "equator_sq2deg"]
@@ -64,6 +65,23 @@ WIDTHS = [0.25, 0.5, 0.75, 1.0, 1.5, 2.0]        # glider lon offsets swept
 def _lat_lbl(v):
     return f"{v:+.1f}"
 
+
+# ---- shared metric axis limits ---------------------------------------------
+# Fixed so every summary figure (all experiments + comparisons) shares the same
+# axes and can be compared by eye. Curves are allowed to run off the plot for
+# the rare outlier -- read exact values off the fig6 heatmaps instead. Chosen to
+# comfortably hold the bulk of the data across every experiment (width-swept and
+# depth-resolved). Keyed by metric id; import as sft.LIMITS in any notebook that
+# does its own plotting.
+LIMITS = {
+    "w_mean":      (-1.0, 2.0),      # mean upwelling <w>  (m day^-1)
+    "bias_sig":    (-0.3, 0.3),      # mean bias / sigma_y
+    "frac_bias":   (-2.0, 2.0),      # mean bias / <w>  (blows up at depth -> off-plot)
+    "sigma_ratio": (0.5, 1.5),       # sigma_x / sigma_y  (est / model)
+    "corr":        (0.4, 1.0),       # correlation r
+    "norm_rms":    (0.0, 1.25),      # relative error  RMS / sigma_y
+    "rms_ms":      (0.0, 1.2e-4),    # depth RMS & signal sigma  (m s^-1, fig5 only)
+}
 
 # ---- six line-able metrics (figure-2 order) --------------------------------
 METRIC6 = [                                      # (fn(df)->series, label, refline)
@@ -76,6 +94,8 @@ METRIC6 = [                                      # (fn(df)->series, label, refli
     (lambda d: d["corr"], "correlation  r", None),
     (lambda d: d["norm_rms"], r"relative error  RMS/$\sigma_y$", None),
 ]
+# metric id per METRIC6 panel (row-major, figure-2 order), for LIMITS lookup
+METRIC6_KEYS = ["w_mean", "bias_sig", "frac_bias", "sigma_ratio", "corr", "norm_rms"]
 ESTTRUE = [Line2D([0], [0], color="0.35", ls="-", lw=1.9, label="estimated"),
            Line2D([0], [0], color="0.35", ls=":", lw=1.4, label="true (model)")]
 
@@ -97,6 +117,7 @@ def label6(ax, xlabel):
         a.set_ylabel(ylab); a.set_xlabel(xlabel); a.grid(alpha=0.3)
         if ref is not None:
             a.axhline(ref, color="0.5", lw=0.8)
+        a.set_ylim(LIMITS[METRIC6_KEYS[k]])
     ax.flat[0].legend(handles=ESTTRUE, loc="best", frameon=True)
 
 
@@ -138,11 +159,11 @@ def label_skill_panels(ax):
     ax[1, 0].set_ylabel(r"$\sigma_x/\sigma_y$  (est / model)"); ax[1, 0].axhline(1, color="0.5", lw=0.8)
     ax[1, 1].set_ylabel("correlation  r")
     ax[1, 2].set_ylabel(r"relative error  RMS/$\sigma_y$")
-    for a in (ax[0, 0], ax[0, 1], ax[0, 2], ax[1, 0], ax[1, 1], ax[1, 2]):
-        a.set_xlabel("glider lon offset (deg)"); a.grid(alpha=0.3)
-    sc = ax[0, 3]
-    lims = [*sc.get_xlim(), *sc.get_ylim()]
-    lo, hi = min(lims), max(lims)
+    for a, key in ((ax[0, 0], "w_mean"), (ax[0, 1], "bias_sig"), (ax[0, 2], "frac_bias"),
+                   (ax[1, 0], "sigma_ratio"), (ax[1, 1], "corr"), (ax[1, 2], "norm_rms")):
+        a.set_xlabel("glider lon offset (deg)"); a.grid(alpha=0.3); a.set_ylim(LIMITS[key])
+    sc = ax[0, 3]                                # est-vs-true scatter: fixed w_mean box
+    lo, hi = LIMITS["w_mean"][0], 1.5            # cap scatter at 1.5 (tighter than line panels)
     sc.plot([lo, hi], [lo, hi], color="0.5", lw=0.8, zorder=0)
     sc.set_xlim(lo, hi); sc.set_ylim(lo, hi); sc.set_aspect("equal", "box")
     sc.set_xlabel(r"true $\langle w\rangle$ (m day$^{-1}$)")
@@ -391,6 +412,7 @@ def make_fig1(m, sumdir):
             ax.axvline(ref, color="0.4", ls="--", lw=1, zorder=1)
         ax.set_yticks(range(len(fams))); ax.set_yticklabels(fams)
         ax.set_ylim(-0.6, len(fams) - 0.4)
+        ax.set_xlim(LIMITS[METRIC6_KEYS[k]])
         ax.set_xlabel(xlab); ax.grid(axis="x", alpha=0.3)
     axes.flat[0].legend(handles=[Line2D([0], [0], ls="", marker="o", mfc="0.6", mec="k", label="true (model)"),
                                  Line2D([0], [0], ls="", marker="D", mfc="0.6", mec="k", label="estimated")],
@@ -451,7 +473,8 @@ def make_fig2abcd(m, sumdir):
         label_skill_panels(axes)
         handles = [Line2D([0], [0], color=cmap[kv], marker="o", mec="k", mew=0.3,
                           lw=1.9, label=lbl(kv)) for kv in keys]
-        axes[0, 3].legend(handles=handles, title=leg_title, loc="best", frameon=True)
+        axes[0, 3].legend(handles=handles, title=leg_title, loc="best", frameon=True,
+                          ncol=2 if len(handles) > 4 else 1)
         geom(axes[1, 3])
         fig.tight_layout(rect=[0, 0, 1, 0.93])
         fig.legend(handles=handles, title=f"color = {leg_title}", loc="upper center",
@@ -459,7 +482,9 @@ def make_fig2abcd(m, sumdir):
         fig.savefig(os.path.join(sumdir, f"fig{tag}.png"), dpi=150, bbox_inches="tight")
         plt.show()
 
-    # 2d: equator single cell, color = shape, linestyle = height, scatter marker = height
+    # 2d: equator single cell, color = shape, line width = height. The scatter
+    # panel carries height in marker size (small=1°, large=2°) since thickness
+    # can't apply to points.
     fig, axes = plt.subplots(2, 4, figsize=(21, 10))
     series = []
     for pat in EQS_PATS:
@@ -467,24 +492,23 @@ def make_fig2abcd(m, sumdir):
         dd = m[m.pattern == pat].sort_values("width")
         if dd.empty:
             continue
-        line_kw = dict(color=st["color"], ls=st["ls"], lw=2.2)
-        scat_kw = dict(color=st["color"], ls="", marker=EQS_HEIGHT_MK[st["height"]],
-                       ms=6, mec="k", mew=0.3)
+        line_kw = dict(color=st["color"], ls="-", lw=st["lw"])
+        scat_kw = dict(color=st["color"], ls="", marker="o", ms=st["ms"], mec="k", mew=0.3)
         series.append((dd, line_kw, scat_kw))
     fill_skill_panels(axes, series)
     label_skill_panels(axes)
     shape_handles = [Line2D([0], [0], color=c, lw=2.4, label=s) for s, c in EQS_SHAPE_COLOR.items()]
-    height_handles = [Line2D([0], [0], color="0.35", ls=ls, lw=2.0, label=f"{h:g} deg tall")
-                      for h, ls in EQS_HEIGHT_LS.items()]
-    scat_height = [Line2D([0], [0], color="0.35", ls="", marker=mk, mec="k", mew=0.3, ms=7,
-                          label=f"{h:g} deg tall") for h, mk in EQS_HEIGHT_MK.items()]
-    axes[0, 3].legend(handles=scat_height, title="marker = height", loc="best", frameon=True)
+    height_handles = [Line2D([0], [0], color="0.35", ls="-", lw=lw, label=f"{h:g} deg tall")
+                      for h, lw in EQS_HEIGHT_LW.items()]
+    scat_height = [Line2D([0], [0], color="0.35", ls="", marker="o", mec="k", mew=0.3, ms=ms,
+                          label=f"{h:g} deg tall") for h, ms in EQS_HEIGHT_MS.items()]
+    axes[0, 3].legend(handles=scat_height, title="size = height", loc="best", frameon=True)
     equator_single_geometry(axes[1, 3])
     fig.tight_layout(rect=[0, 0, 1, 0.93])
     lg1 = fig.legend(handles=shape_handles, title="color = shape", loc="upper center",
                      bbox_to_anchor=(0.5, 1.0), ncol=3, frameon=False)
     fig.add_artist(lg1)
-    fig.legend(handles=height_handles, title="line = height", loc="upper center",
+    fig.legend(handles=height_handles, title="line width = height", loc="upper center",
                bbox_to_anchor=(0.85, 1.0), ncol=2, frameon=False, handlelength=3.0)
     fig.savefig(os.path.join(sumdir, "fig2d_equator_single.png"), dpi=150, bbox_inches="tight")
     plt.show()
@@ -509,6 +533,7 @@ def make_fig3(m, sumdir):
         axes[-1, j].set_xlabel("cell center lat (deg)")
     for k, (fn, ylab, ref) in enumerate(METRIC6):
         axes[k, 0].set_ylabel(ylab)
+        axes[k, 0].set_ylim(LIMITS[METRIC6_KEYS[k]])   # sharey="row" propagates
         for j in range(axes.shape[1]):
             axes[k, j].grid(alpha=0.3)
             if ref is not None:
@@ -553,17 +578,17 @@ def make_fig5(m, sumdir, load_cell):
             ds = load_cell(r)
             B = ot.w_skill_by_depth(ds.w_est, ds.w_model)
             z = B.depth
-            c, ls = st["color"], st["ls"]
+            c = st["color"]; ls = st.get("ls", "-"); lw = st.get("lw", 1.9)
             axes[0, 0].plot(B.w_model_mean * W2DAY, z, color=c, ls=":", lw=1.2, alpha=0.6)
-            axes[0, 0].plot(B.w_est_mean * W2DAY, z, color=c, ls=ls, lw=1.9)
-            axes[0, 1].plot(B.mean_bias / B.w_model_std, z, color=c, ls=ls, lw=1.9)
-            axes[0, 2].plot(ot.frac_mean_bias(B.mean_bias, B.w_model_mean), z, color=c, ls=ls, lw=1.9)
-            axes[0, 3].plot(B.rms, z, color=c, ls=ls, lw=1.9)
+            axes[0, 0].plot(B.w_est_mean * W2DAY, z, color=c, ls=ls, lw=lw)
+            axes[0, 1].plot(B.mean_bias / B.w_model_std, z, color=c, ls=ls, lw=lw)
+            axes[0, 2].plot(ot.frac_mean_bias(B.mean_bias, B.w_model_mean), z, color=c, ls=ls, lw=lw)
+            axes[0, 3].plot(B.rms, z, color=c, ls=ls, lw=lw)
             axes[0, 3].plot(B.w_model_std, z, color=c, ls=":", lw=1.2, alpha=0.6)
-            axes[1, 0].plot(B.w_est_std / B.w_model_std, z, color=c, ls=ls, lw=1.9)
-            axes[1, 1].plot(B["corr"], z, color=c, ls=ls, lw=1.9)
-            axes[1, 2].plot(B.norm_rms, z, color=c, ls=ls, lw=1.9)
-            handles.append(Line2D([0], [0], color=c, ls=ls, lw=1.9, label=st["lbl"]))
+            axes[1, 0].plot(B.w_est_std / B.w_model_std, z, color=c, ls=ls, lw=lw)
+            axes[1, 1].plot(B["corr"], z, color=c, ls=ls, lw=lw)
+            axes[1, 2].plot(B.norm_rms, z, color=c, ls=ls, lw=lw)
+            handles.append(Line2D([0], [0], color=c, ls=ls, lw=lw, label=st["lbl"]))
         axes[0, 0].set_title(r"mean $\langle w\rangle$: est & true  [m day$^{-1}$]")
         axes[0, 0].axvline(0, color="0.5", lw=0.8, zorder=0)
         axes[0, 0].legend(handles=ESTTRUE, loc="best", frameon=True)
@@ -575,6 +600,11 @@ def make_fig5(m, sumdir, load_cell):
         axes[1, 2].set_title(r"relative error  RMS/$\sigma_y$")
         axes[1, 3].axis("off")
         axes[0, 0].set_ylabel("depth (m)"); axes[1, 0].set_ylabel("depth (m)")
+        for a, key in ((axes[0, 0], "w_mean"), (axes[0, 1], "bias_sig"),
+                       (axes[0, 2], "frac_bias"), (axes[0, 3], "rms_ms"),
+                       (axes[1, 0], "sigma_ratio"), (axes[1, 1], "corr"),
+                       (axes[1, 2], "norm_rms")):
+            a.set_xlim(LIMITS[key])
         for a in axes.flat:
             if a.axison:
                 a.grid(alpha=0.3)
@@ -597,9 +627,10 @@ def make_fig5(m, sumdir, load_cell):
     _plot_depth(rs, "5c_density", "gliders/cell")
     d = m[W]
     rs = [(d[d.pattern == pat].iloc[0],
-           dict(color=EQS_STYLE[pat]["color"], ls=EQS_STYLE[pat]["ls"], lbl=EQS_STYLE[pat]["lbl"]))
+           dict(color=EQS_STYLE[pat]["color"], ls="-", lw=EQS_STYLE[pat]["lw"],
+                lbl=EQS_STYLE[pat]["lbl"]))
           for pat in EQS_PATS if (d.pattern == pat).any()]
-    _plot_depth(rs, "5d_equator_single", "shape (color) x height (line)")
+    _plot_depth(rs, "5d_equator_single", "shape (color) x height (line width)")
 
 
 def make_fig6(m, sumdir):
@@ -677,8 +708,7 @@ def make_fig2abcd_compare(M, outdir):
             st = EXP_STYLE[exp]; d = M[exp][maskfn(M[exp])]
             for kv in keys:
                 dd = d[d[key] == kv].drop_duplicates("width").sort_values("width")
-                lkw = dict(color=cmap[kv], ls=st["ls"], marker="o", lw=1.9, ms=6,
-                           mec="k", mew=0.3, mfc=mfc(exp, cmap[kv]))
+                lkw = dict(color=cmap[kv], ls=st["ls"], lw=1.9)
                 skw = dict(color=cmap[kv], ls="", marker="o", ms=6, mew=1.2,
                            mec=cmap[kv], mfc=mfc(exp, cmap[kv]))
                 series.append((dd, lkw, skw))
@@ -697,7 +727,8 @@ def make_fig2abcd_compare(M, outdir):
         fig.savefig(os.path.join(outdir, f"fig{tag}_compare.png"), dpi=150, bbox_inches="tight")
         plt.show()
 
-    # 2d: color = shape, marker = height, linestyle/fill = experiment
+    # 2d: color = shape, line width = height, linestyle/fill = experiment. The
+    # scatter panel carries height in marker size (small=1°, large=2°).
     fig, axes = plt.subplots(2, 4, figsize=(21, 10))
     series = []
     for exp in (1, 2):
@@ -707,27 +738,30 @@ def make_fig2abcd_compare(M, outdir):
             dd = M[exp][M[exp].pattern == pat].sort_values("width")
             if dd.empty:
                 continue
-            lkw = dict(ls=st["ls"], marker=s["mk"], color=s["color"], lw=1.9, ms=6,
-                       mec="k", mew=0.3, mfc=mfc(exp, s["color"]))
-            skw = dict(ls="", marker=s["mk"], color=s["color"], ms=6, mew=1.2,
+            lkw = dict(ls=st["ls"], color=s["color"], lw=s["lw"])
+            skw = dict(ls="", marker="o", color=s["color"], ms=s["ms"], mew=1.2,
                        mec=s["color"], mfc=mfc(exp, s["color"]))
             series.append((dd, lkw, skw))
     fill_skill_panels(axes, series)
     label_skill_panels(axes)
-    shape_handles = [Line2D([0], [0], color=EQS_STYLE[p]["color"], marker=EQS_STYLE[p]["mk"],
-                            mec="k", mew=0.3, lw=1.9, label=EQS_STYLE[p]["lbl"]) for p in EQS_PATS]
-    scat_handles = [Line2D([0], [0], ls="", marker=_EQS_MK_CMP[h], color="0.35", mec="k",
-                           mew=0.3, ms=7, label=f"{h:g} deg tall") for h in (1.0, 2.0)]
+    shape_handles = [Line2D([0], [0], color=c, lw=2.4, label=s) for s, c in EQS_SHAPE_COLOR.items()]
+    height_handles = [Line2D([0], [0], color="0.35", ls="-", lw=lw, label=f"{h:g} deg tall")
+                      for h, lw in EQS_HEIGHT_LW.items()]
+    scat_handles = [Line2D([0], [0], ls="", marker="o", color="0.35", mec="k", mew=0.3,
+                           ms=ms, label=f"{h:g} deg tall") for h, ms in EQS_HEIGHT_MS.items()]
     scat_handles += [Line2D([0], [0], ls="", marker="o", mfc="0.4", mec="0.4", ms=8, label="exp1 (filled)"),
                      Line2D([0], [0], ls="", marker="o", mfc="white", mec="0.4", mew=1.4, ms=8, label="exp2 (open)")]
-    axes[0, 3].legend(handles=scat_handles, loc="best", frameon=True, ncol=2)
+    axes[0, 3].legend(handles=scat_handles, title="size = height", loc="best", frameon=True, ncol=2)
     equator_single_geometry(axes[1, 3])
     fig.tight_layout(rect=[0, 0, 1, 0.93])
-    lg1 = fig.legend(handles=shape_handles, title="color = shape  x  marker = height",
-                     loc="upper center", bbox_to_anchor=(0.5, 1.0), ncol=3, frameon=False)
+    lg1 = fig.legend(handles=shape_handles, title="color = shape", loc="upper center",
+                     bbox_to_anchor=(0.38, 1.0), ncol=3, frameon=False)
     fig.add_artist(lg1)
+    lg2 = fig.legend(handles=height_handles, title="line width = height", loc="upper center",
+                     bbox_to_anchor=(0.7, 1.0), ncol=2, frameon=False, handlelength=3.0)
+    fig.add_artist(lg2)
     fig.legend(handles=exp_handles(), title="experiment", loc="upper center",
-               bbox_to_anchor=(0.9, 1.0), ncol=1, frameon=False, handlelength=3.0)
+               bbox_to_anchor=(0.92, 1.0), ncol=1, frameon=False, handlelength=3.0)
     fig.savefig(os.path.join(outdir, "fig2d_equator_single_compare.png"), dpi=150, bbox_inches="tight")
     plt.show()
 
@@ -745,8 +779,7 @@ def make_fig5_compare(M, outdir, load_cell):
                 ds = load_cell(exp, r)
                 B = ot.w_skill_by_depth(ds.w_est, ds.w_model).sortby("depth")
                 z = B.depth
-                common = dict(color=s["color"], ls=est["ls"], lw=1.8, marker=s.get("mk"),
-                              markevery=5, ms=6, mec="k", mew=0.3, mfc=mfc(exp, s["color"]))
+                common = dict(color=s["color"], ls=est["ls"], lw=s.get("lw", 1.8))
                 axes[0, 0].plot(B.w_model_mean * W2DAY, z, color="0.6", ls=":", lw=1.1, alpha=0.6)
                 axes[0, 0].plot(B.w_est_mean * W2DAY, z, **common)
                 axes[0, 1].plot(B.mean_bias / B.w_model_std, z, **common)
@@ -769,6 +802,11 @@ def make_fig5_compare(M, outdir, load_cell):
         axes[1, 2].set_title(r"relative error  RMS/$\sigma_y$")
         axes[1, 3].axis("off")
         axes[0, 0].set_ylabel("depth (m)"); axes[1, 0].set_ylabel("depth (m)")
+        for a, key in ((axes[0, 0], "w_mean"), (axes[0, 1], "bias_sig"),
+                       (axes[0, 2], "frac_bias"), (axes[0, 3], "rms_ms"),
+                       (axes[1, 0], "sigma_ratio"), (axes[1, 1], "corr"),
+                       (axes[1, 2], "norm_rms")):
+            a.set_xlim(LIMITS[key])
         for a in axes.flat:
             if a.axison:
                 a.grid(alpha=0.3)
@@ -806,11 +844,12 @@ def make_fig5_compare(M, outdir, load_cell):
     for exp in (1, 2):
         d = M[exp][np.isclose(M[exp].width, depth_width)]
         rows_by_exp[exp] = [(d[d.pattern == pat].iloc[0],
-                             dict(color=EQS_STYLE[pat]["color"], mk=EQS_STYLE[pat]["mk"], lbl=EQS_STYLE[pat]["lbl"]))
+                             dict(color=EQS_STYLE[pat]["color"], lw=EQS_STYLE[pat]["lw"],
+                                  lbl=EQS_STYLE[pat]["lbl"]))
                             for pat in EQS_PATS if (d.pattern == pat).any()]
-    line_handles = [Line2D([0], [0], color=EQS_STYLE[p]["color"], marker=EQS_STYLE[p]["mk"],
-                           mec="k", mew=0.3, lw=1.9, label=EQS_STYLE[p]["lbl"]) for p in EQS_PATS]
-    _depth_compare(rows_by_exp, "5d_equator_single", "shape (color) x height (marker)", line_handles)
+    line_handles = [Line2D([0], [0], color=EQS_STYLE[p]["color"], lw=EQS_STYLE[p]["lw"],
+                           label=EQS_STYLE[p]["lbl"]) for p in EQS_PATS]
+    _depth_compare(rows_by_exp, "5d_equator_single", "shape (color) x height (line width)", line_handles)
 
 
 def make_fig6_compare(M, outdir):
