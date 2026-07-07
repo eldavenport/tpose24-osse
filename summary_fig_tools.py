@@ -672,7 +672,11 @@ def make_fig6(m, sumdir):
 # (profiles) or the y-axis category (totals), so it needs no color.
 F7_EST_C = "#1f77b4"      # array estimate
 F7_MOD_C = "#d62728"      # model truth
-F7_Z = 1.96               # 95% CI = mean +/- 1.96 * SE
+F7_Z = 1.96               # 95% CI = mean +/- 1.96 * SE (normal approximation).
+# Optional stricter version: since sigma is estimated from the data, the exact
+# multiplier is Student's t, t.ppf(0.975, n_eff-1), not 1.96. With n_eff ~ 30-70
+# here that is ~2.0 (~2-4% wider), so 1.96 is used for simplicity. To switch, make
+# the multiplier per-config from each cell's n_eff instead of this constant.
 
 
 def make_fig7(m, sumdir, load_cell):
@@ -1008,3 +1012,124 @@ def make_fig6_compare(M, outdir):
     _fig(ORDER, "fig6_metric_heatmaps_compare.png", (19, 13))
     for tag, order in SUB_ORDERS:
         _fig(order, f"fig{tag}_compare.png", (19, max(6.5, 0.7 * len(order) + 4.5)))
+
+
+# color for the two experiments' estimates in fig7 compare (truth is gray).
+# Linestyle still carries experiment (solid=exp1, dashed=exp2, per convention);
+# color is added only so the two CI bands are distinguishable in a shared panel.
+F7C_EXP_C = {1: "#1f77b4", 2: "#e6820a"}
+F7C_TRUE_C = "0.35"
+
+
+def make_fig7_compare(M, outdir, load_cell):
+    """fig7a-7e comparison: the estimated time-mean <w> +/- autocorrelation-aware
+    95% CI for exp1 (solid) vs exp2 (dashed), against the shared model truth
+    (gray dotted), per config. Same groups as fig5/fig7. Each config gets a depth
+    profile (est CI bands per experiment + the true band); a final panel shows the
+    total-over-depth <w> +/- CI as a forest plot (true, exp1, exp2 per config).
+    The truth is drawn from exp1 (identical to exp2 on shared depths; exp2 merely
+    extends to the surface). load_cell(exp, row) -> Dataset with w_est, w_model."""
+    W_ = 0.5
+
+    def _match(cfgs, tag, group_lbl):
+        # cfgs: list of (label, {1: row1, 2: row2})
+        ncfg = len(cfgs)
+        fig, axes = plt.subplots(1, ncfg + 1, figsize=(3.3 * (ncfg + 1), 6.3))
+        axes = np.atleast_1d(axes)
+        profs, lo, hi = [], 0.0, 0.0
+        for lbl, rows in cfgs:
+            B = {}
+            for e in (1, 2):
+                with load_cell(e, rows[e]) as ds:
+                    B[e] = ot.w_skill_by_depth(ds.w_est, ds.w_model)
+            profs.append((lbl, B))
+            for mean, se in ((B[1].w_model_mean, B[1].w_model_mean_se),
+                             (B[1].w_est_mean, B[1].w_est_mean_se),
+                             (B[2].w_est_mean, B[2].w_est_mean_se)):
+                lo = min(lo, float(((mean - F7_Z * se) * W2DAY).min()))
+                hi = max(hi, float(((mean + F7_Z * se) * W2DAY).max()))
+        pad = 0.08 * (hi - lo) or 0.1
+        for ax, (lbl, B) in zip(axes[:ncfg], profs):
+            zt = B[1].depth.values                       # shared model truth (exp1)
+            mu = B[1].w_model_mean.values * W2DAY; hw = F7_Z * B[1].w_model_mean_se.values * W2DAY
+            ax.fill_betweenx(zt, mu - hw, mu + hw, color=F7C_TRUE_C, alpha=0.13, lw=0)
+            ax.plot(mu, zt, color=F7C_TRUE_C, ls=":", lw=1.5)
+            for e in (1, 2):
+                z = B[e].depth.values
+                mu = B[e].w_est_mean.values * W2DAY; hw = F7_Z * B[e].w_est_mean_se.values * W2DAY
+                ax.fill_betweenx(z, mu - hw, mu + hw, color=F7C_EXP_C[e], alpha=0.15, lw=0)
+                ax.plot(mu, z, color=F7C_EXP_C[e], ls=EXP_STYLE[e]["ls"], lw=1.9)
+            ax.axvline(0, color="0.5", lw=0.8, zorder=0)
+            ax.set_title(lbl); ax.set_xlim(lo - pad, hi + pad); ax.grid(alpha=0.3)
+            ax.set_xlabel(r"$\langle w\rangle$  (m day$^{-1}$)")
+        axes[0].set_ylabel("depth (m)")
+        for ax in axes[1:ncfg]:
+            ax.set_yticklabels([])
+
+        axT = axes[ncfg]; yv = np.arange(ncfg)[::-1]
+        for y, (lbl, rows) in zip(yv, cfgs):
+            r1 = rows[1]
+            axT.errorbar(r1["w_model_mean"] * W2DAY, y + 0.22,
+                         xerr=F7_Z * r1["w_model_mean_se"] * W2DAY,
+                         fmt="o", color=F7C_TRUE_C, capsize=3, ms=6, lw=1.6)
+            for e, off, mk in ((1, 0.0, "s"), (2, -0.22, "D")):
+                r = rows[e]
+                axT.errorbar(r["w_est_mean"] * W2DAY, y + off,
+                             xerr=F7_Z * r["w_est_mean_se"] * W2DAY,
+                             fmt=mk, color=F7C_EXP_C[e], capsize=3, ms=6, lw=1.6)
+        axT.axvline(0, color="0.5", lw=0.8)
+        axT.set_yticks(yv); axT.set_yticklabels([lbl for lbl, _ in cfgs])
+        axT.set_ylim(-0.6, ncfg - 0.4)
+        axT.set_xlabel(r"total $\langle w\rangle$  (m day$^{-1}$)")
+        axT.set_title("total over depth"); axT.grid(alpha=0.3, axis="x")
+
+        handles = [Line2D([0], [0], color=F7C_TRUE_C, ls=":", lw=1.9, marker="o",
+                          label=r"true / model ($\pm$95% CI)"),
+                   Line2D([0], [0], color=F7C_EXP_C[1], ls="-", lw=1.9, marker="s",
+                          label=EXP_STYLE[1]["lbl"] + r" ($\pm$95% CI)"),
+                   Line2D([0], [0], color=F7C_EXP_C[2], ls="--", lw=1.9, marker="D",
+                          label=EXP_STYLE[2]["lbl"] + r" ($\pm$95% CI)")]
+        fig.tight_layout(rect=[0, 0, 1, 0.9])
+        fig.legend(handles=handles, title=group_lbl, loc="upper center",
+                   bbox_to_anchor=(0.5, 1.0), ncol=3, frameon=False)
+        fig.savefig(os.path.join(outdir, f"fig{tag}_compare.png"), dpi=150, bbox_inches="tight")
+        plt.show()
+
+    def _rows_for(key_mask, key_col, key_val):
+        rows = {}
+        for e in (1, 2):
+            d = M[e][key_mask(M[e]) & (M[e][key_col] == key_val) & np.isclose(M[e].width, W_)] \
+                if key_col != "center_lat" else \
+                M[e][key_mask(M[e]) & np.isclose(M[e].center_lat, key_val) & np.isclose(M[e].width, W_)]
+            if d.empty:
+                return None
+            rows[e] = d.iloc[0]
+        return rows
+
+    for tag, pat, glbl in (("7a_shift", "shift", "shift array — cell center lat"),
+                           ("7e_shift_hex", "shift_hex", "shift hex — cell center lat"),
+                           ("7b_equator3cell", "equator_3cell", "equator 3-cell — cell center lat")):
+        mask = (lambda p: (lambda mm: mm.pattern == p))(pat)
+        cfgs = []
+        for lat in sorted(M[1][mask(M[1])].center_lat.unique()):
+            rows = _rows_for(mask, "center_lat", lat)
+            if rows:
+                cfgs.append((_lat_lbl(lat), rows))
+        if cfgs:
+            _match(cfgs, tag, glbl)
+    mask = lambda mm: mm.family == "density"
+    cfgs = []
+    for ng in sorted(M[1][mask(M[1])].n_gliders_cell.unique()):
+        rows = _rows_for(mask, "n_gliders_cell", ng)
+        if rows:
+            cfgs.append((f"{int(ng)} gliders", rows))
+    if cfgs:
+        _match(cfgs, "7c_density", "density array — gliders per cell")
+    mask = lambda mm: mm.width == mm.width      # all rows
+    cfgs = []
+    for pat in EQS_PATS:
+        rows = _rows_for(lambda mm: mm.pattern == pat, "pattern", pat)
+        if rows:
+            cfgs.append((EQS_STYLE[pat]["lbl"], rows))
+    if cfgs:
+        _match(cfgs, "7d_equator_single", "equator single cell — shape & height")
