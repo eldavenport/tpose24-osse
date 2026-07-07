@@ -81,7 +81,7 @@ def load_model(run_dir, iters, ref_date='2012-10-01', delta_t=300):
 
 
 def _latlon_to_m(lats, lons):
-    """Equirectangular projection of lat/lon (deg) to metres about their centroid."""
+    """projection of lat/lon (deg) to metres about their centroid."""
     lats, lons = np.asarray(lats), np.asarray(lons)
     lat_c, lon_c = lats.mean(), lons.mean()
     deg_to_m = np.pi / 180 * 6371000.0
@@ -145,7 +145,7 @@ def sample_fields(ds, positions, vars=('UVEL', 'VVEL', 'THETA', 'SALT'),
 def model_region(ds, positions, vars=('UVEL', 'VVEL', 'THETA', 'SALT'),
                  max_depth=70, dz_obs=2, min_depth=0):
     """
-    The 'true' population: model fields at every grid point inside the array hull.
+    The 'true' estimate: model fields at every grid point inside the array hull.
 
     Each field is interpolated to the tracer cell centres (co-locating U, V, T, S)
     and to the obs depths, then masked to the convex hull of positions and stacked
@@ -462,9 +462,8 @@ def _integrated_autocorr_time(x):
     """Integrated autocorrelation time tau = 1 + 2*sum_k rho_k of a 1-D series,
     in units of the sampling interval (samples).
 
-    The sum is truncated by the initial-positive-sequence rule: accumulate lags
-    until the sample ACF first goes non-positive (a robust cutoff for the noisy
-    ACF tail). tau is the factor by which serial correlation inflates the
+    The sum is truncated by: accumulate lags until the sample ACF first 
+    goes non-positive. tau is the factor by which serial correlation inflates the
     variance of the sample mean, so the effective sample size is N/tau.
     """
     x = np.asarray(x, float)
@@ -487,17 +486,14 @@ def mean_se_autocorr(series):
     """Time-mean of a 1-D series and the standard error of that mean, with the SE
     inflated for serial correlation.
 
-    The estimand is the *expected* (long-run / ensemble) mean of the process that
-    generated the record, for which this finite window is one autocorrelated
-    sample -- NOT the exact within-window average (that is known exactly and has
-    no sampling error). SE = sd/sqrt(N_eff) with N_eff = N/tau, so a 95% CI is
-    mean +/- 1.96*SE.
+    SE = sd/sqrt(N_eff) with N_eff = N/tau, so a 95% CI is mean +/- 1.96*SE (assuming 
+    normal distribution). 
 
     Returns
     -------
     (mean, se, n_eff, tau)
-        mean   sample mean of the finite series
-        se     autocorrelation-aware standard error of that mean (NaN if N<2)
+        mean   sample mean of the series
+        se     standard error of that mean (NaN if N<2)
         n_eff  effective sample size N/tau
         tau    integrated autocorrelation time (samples); NaN if N<2
     """
@@ -518,8 +514,7 @@ def mean_se_autocorr(series):
 def w_skill_metrics(w_est, w_model, depth_range=None):
     """
     Scalar skill of an estimated w against model-truth w, pooled over all
-    (time, depth) samples. Every metric is a plain descriptive statistic — no
-    thresholds or pass/fail judgements are applied.
+    (time, depth) samples.
 
     Parameters
     ----------
@@ -544,7 +539,7 @@ def w_skill_metrics(w_est, w_model, depth_range=None):
         norm_rms    rms / w_model_std (error relative to the signal); NaN if signal std is 0
         n           number of finite sample pairs used
         w_est_mean_se, w_model_mean_se, mean_bias_se
-                    autocorrelation-aware standard errors of the depth-averaged
+                    standard errors of the depth-averaged
                     time means (est, true, and their paired difference) [m/s].
                     95% CI = mean +/- 1.96*se. See mean_se_autocorr for the
                     estimand (expected/long-run mean, not the exact window mean).
@@ -632,7 +627,7 @@ def w_skill_by_depth(w_est, w_model):
     -------
     xr.Dataset, dim (depth)
         rms, mean_bias, corr, w_est_std, w_model_std, norm_rms,
-        w_est_mean, w_model_mean, and the autocorrelation-aware standard errors
+        w_est_mean, w_model_mean, and the standard errors
         of the three time means at each depth: w_est_mean_se, w_model_mean_se,
         mean_bias_se (95% CI = mean +/- 1.96*se), plus n_eff (of the difference)
         and tau (integrated autocorr time, samples). See mean_se_autocorr.
