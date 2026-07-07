@@ -665,6 +665,108 @@ def make_fig6(m, sumdir):
 
 
 # ============================================================================
+# Figure 7 — time-mean <w> with autocorrelation-aware confidence intervals
+# ============================================================================
+# Within a fig7 panel, color separates the two quantities being compared
+# (estimate vs model truth); config identity is carried by the panel title
+# (profiles) or the y-axis category (totals), so it needs no color.
+F7_EST_C = "#1f77b4"      # array estimate
+F7_MOD_C = "#d62728"      # model truth
+F7_Z = 1.96               # 95% CI = mean +/- 1.96 * SE
+
+
+def make_fig7(m, sumdir, load_cell):
+    """fig7a-7e: the time-mean vertical velocity <w> and how well it is resolved,
+    shown with autocorrelation-aware 95% confidence intervals.
+
+    One figure per method group (same groups as fig5). For each config: a depth
+    profile of the estimated (solid) and true (dotted) time-mean <w>, each with a
+    shaded +/-1.96*SE band (per depth); plus a final "total over depth" panel that
+    collapses the column to one estimated and one true <w> +/- CI per config.
+
+    The SE (osse_tools.mean_se_autocorr) treats the 81-day record as ONE
+    autocorrelated sample of the process, deflating N to N_eff = N/tau: the CI is
+    a statement about the expected/long-run mean, not the exact window average
+    (which is known exactly). A band that straddles zero means this record does
+    not resolve a nonzero mean; overlapping est/true bands mean the estimate is
+    statistically consistent with truth."""
+    W = np.isclose(m.width, 0.5)
+
+    def _render(rows_labels, tag, group_lbl):
+        ncfg = len(rows_labels)
+        fig, axes = plt.subplots(1, ncfg + 1, figsize=(3.3 * (ncfg + 1), 6.3))
+        axes = np.atleast_1d(axes)
+        # per-config depth profiles (recompute per-depth SE from the saved arrays)
+        profs, lo, hi = [], 0.0, 0.0
+        for r, lbl in rows_labels:
+            with load_cell(r) as ds:
+                B = ot.w_skill_by_depth(ds.w_est, ds.w_model)
+            profs.append((B, lbl))
+            for mean, se in ((B.w_model_mean, B.w_model_mean_se),
+                             (B.w_est_mean, B.w_est_mean_se)):
+                lo = min(lo, float(((mean - F7_Z * se) * W2DAY).min()))
+                hi = max(hi, float(((mean + F7_Z * se) * W2DAY).max()))
+        pad = 0.08 * (hi - lo) or 0.1
+        for ax, (B, lbl) in zip(axes[:ncfg], profs):
+            z = B.depth.values
+            for mean, se, c, ls in ((B.w_model_mean, B.w_model_mean_se, F7_MOD_C, ":"),
+                                    (B.w_est_mean, B.w_est_mean_se, F7_EST_C, "-")):
+                mu = mean.values * W2DAY; hw = F7_Z * se.values * W2DAY
+                ax.fill_betweenx(z, mu - hw, mu + hw, color=c, alpha=0.18, lw=0)
+                ax.plot(mu, z, color=c, ls=ls, lw=1.9)
+            ax.axvline(0, color="0.5", lw=0.8, zorder=0)
+            ax.set_title(lbl); ax.set_xlim(lo - pad, hi + pad); ax.grid(alpha=0.3)
+            ax.set_xlabel(r"$\langle w\rangle$  (m day$^{-1}$)")
+        axes[0].set_ylabel("depth (m)")
+        for ax in axes[1:ncfg]:
+            ax.set_yticklabels([])
+
+        # total-over-depth forest panel (column means from the metrics row)
+        axT = axes[ncfg]
+        yv = np.arange(ncfg)[::-1]
+        for y, (r, lbl) in zip(yv, rows_labels):
+            for off, c, mk, mkey, skey in (
+                    (+0.15, F7_MOD_C, "o", "w_model_mean", "w_model_mean_se"),
+                    (-0.15, F7_EST_C, "s", "w_est_mean",   "w_est_mean_se")):
+                axT.errorbar(r[mkey] * W2DAY, y + off, xerr=F7_Z * r[skey] * W2DAY,
+                             fmt=mk, color=c, capsize=3, ms=6, lw=1.6)
+        axT.axvline(0, color="0.5", lw=0.8)
+        axT.set_yticks(yv); axT.set_yticklabels([lbl for _, lbl in rows_labels])
+        axT.set_ylim(-0.6, ncfg - 0.4)
+        axT.set_xlabel(r"total $\langle w\rangle$  (m day$^{-1}$)")
+        axT.set_title("total over depth"); axT.grid(alpha=0.3, axis="x")
+
+        handles = [Line2D([0], [0], color=F7_EST_C, ls="-", lw=1.9,
+                          marker="s", label=r"estimated ($\pm$95% CI)"),
+                   Line2D([0], [0], color=F7_MOD_C, ls=":", lw=1.9,
+                          marker="o", label=r"true / model ($\pm$95% CI)")]
+        fig.tight_layout(rect=[0, 0, 1, 0.9])
+        fig.legend(handles=handles, title=group_lbl, loc="upper center",
+                   bbox_to_anchor=(0.5, 1.0), ncol=2, frameon=False)
+        fig.savefig(os.path.join(sumdir, f"fig{tag}.png"), dpi=150, bbox_inches="tight")
+        plt.show()
+
+    for tag, pat, glbl in (("7a_shift", "shift", "shift array — cell center lat"),
+                           ("7e_shift_hex", "shift_hex", "shift hex array — cell center lat"),
+                           ("7b_equator3cell", "equator_3cell", "equator 3-cell — cell center lat")):
+        d = m[(m.pattern == pat) & W]
+        rs = [(d[np.isclose(d.center_lat, lat)].iloc[0], _lat_lbl(lat))
+              for lat in sorted(d.center_lat.unique())]
+        if rs:
+            _render(rs, tag, glbl)
+    d = m[(m.family == "density") & W]
+    rs = [(d[d.n_gliders_cell == ng].iloc[0], f"{int(ng)} gliders")
+          for ng in sorted(d.n_gliders_cell.unique())]
+    if rs:
+        _render(rs, "7c_density", "density array — gliders per cell")
+    d = m[W]
+    rs = [(d[d.pattern == pat].iloc[0], EQS_STYLE[pat]["lbl"])
+          for pat in EQS_PATS if (d.pattern == pat).any()]
+    if rs:
+        _render(rs, "7d_equator_single", "equator single cell — shape & height")
+
+
+# ============================================================================
 # Figure builders — exp1 vs exp2 comparison
 # ============================================================================
 EXP_STYLE = {

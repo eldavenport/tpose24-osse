@@ -458,6 +458,63 @@ def model_divergence(ds, positions, max_depth=70, dz_obs=2, min_depth=0):
 # Vertical-velocity skill metrics
 # ---------------------------------------------------------------------------
 
+def _integrated_autocorr_time(x):
+    """Integrated autocorrelation time tau = 1 + 2*sum_k rho_k of a 1-D series,
+    in units of the sampling interval (samples).
+
+    The sum is truncated by the initial-positive-sequence rule: accumulate lags
+    until the sample ACF first goes non-positive (a robust cutoff for the noisy
+    ACF tail). tau is the factor by which serial correlation inflates the
+    variance of the sample mean, so the effective sample size is N/tau.
+    """
+    x = np.asarray(x, float)
+    n = x.size
+    xa = x - x.mean()
+    denom = np.dot(xa, xa)                        # == n * sample variance
+    if n < 2 or denom <= 0:
+        return 1.0
+    maxlag = max(1, n // 4)
+    s = 0.0
+    for k in range(1, maxlag + 1):
+        rho_k = np.dot(xa[:-k], xa[k:]) / denom   # the 1/n on top and bottom cancels
+        if rho_k <= 0:
+            break
+        s += rho_k
+    return max(1.0 + 2.0 * s, 1.0)
+
+
+def mean_se_autocorr(series):
+    """Time-mean of a 1-D series and the standard error of that mean, with the SE
+    inflated for serial correlation.
+
+    The estimand is the *expected* (long-run / ensemble) mean of the process that
+    generated the record, for which this finite window is one autocorrelated
+    sample -- NOT the exact within-window average (that is known exactly and has
+    no sampling error). SE = sd/sqrt(N_eff) with N_eff = N/tau, so a 95% CI is
+    mean +/- 1.96*SE.
+
+    Returns
+    -------
+    (mean, se, n_eff, tau)
+        mean   sample mean of the finite series
+        se     autocorrelation-aware standard error of that mean (NaN if N<2)
+        n_eff  effective sample size N/tau
+        tau    integrated autocorrelation time (samples); NaN if N<2
+    """
+    x = np.asarray(series, float)
+    x = x[np.isfinite(x)]
+    n = x.size
+    if n == 0:
+        return np.nan, np.nan, 0.0, np.nan
+    mean = float(x.mean())
+    if n < 2:
+        return mean, np.nan, float(n), np.nan
+    tau   = _integrated_autocorr_time(x)
+    n_eff = n / tau
+    se    = float(x.std(ddof=1) / np.sqrt(n_eff))
+    return mean, se, float(n_eff), float(tau)
+
+
 def w_skill_metrics(w_est, w_model, depth_range=None):
     """
     Scalar skill of an estimated w against model-truth w, pooled over all
@@ -486,6 +543,15 @@ def w_skill_metrics(w_est, w_model, depth_range=None):
         w_model_mean mean of w_model, i.e. the mean vertical velocity [m/s]
         norm_rms    rms / w_model_std (error relative to the signal); NaN if signal std is 0
         n           number of finite sample pairs used
+        w_est_mean_se, w_model_mean_se, mean_bias_se
+                    autocorrelation-aware standard errors of the depth-averaged
+                    time means (est, true, and their paired difference) [m/s].
+                    95% CI = mean +/- 1.96*se. See mean_se_autocorr for the
+                    estimand (expected/long-run mean, not the exact window mean).
+        n_eff, n_eff_model, n_eff_est
+                    effective sample sizes (N/tau) of the difference, true, and
+                    estimated column-mean series
+        tau         integrated autocorrelation time of the difference (samples)
     """
     if depth_range is not None:
         w_est   = w_est.sel(depth=slice(*depth_range))
@@ -493,6 +559,14 @@ def w_skill_metrics(w_est, w_model, depth_range=None):
     # Compare only where both are defined: an extrapolated-to-surface w_est spans
     # shallower interfaces than w_model, so raveling raw .values would mismatch.
     w_est, w_model = xr.align(w_est, w_model, join='inner')
+    # Autocorrelation-aware SE of the depth-averaged ("total over depth") time
+    # means. Each is the time series of the column-mean w; its mean is the total
+    # <w> and its SE accounts for w's ~1-day decorrelation (see mean_se_autocorr).
+    est_col = w_est.mean('depth', skipna=True).values
+    mod_col = w_model.mean('depth', skipna=True).values
+    _, est_mean_se, n_eff_est, _        = mean_se_autocorr(est_col)
+    _, mod_mean_se, n_eff_model, _      = mean_se_autocorr(mod_col)
+    _, bias_mean_se, n_eff, tau         = mean_se_autocorr(est_col - mod_col)
     est = np.asarray(w_est.values, float).ravel()
     mod = np.asarray(w_model.values, float).ravel()
     good = np.isfinite(est) & np.isfinite(mod)
@@ -513,6 +587,14 @@ def w_skill_metrics(w_est, w_model, depth_range=None):
         w_model_mean=float(mod.mean()) if mod.size else np.nan,
         norm_rms=rms / mod_std if mod_std and mod_std > 0 else np.nan,
         n=int(est.size),
+        # autocorrelation-aware SEs of the depth-averaged time means (m/s)
+        w_est_mean_se=est_mean_se,
+        w_model_mean_se=mod_mean_se,
+        mean_bias_se=bias_mean_se,
+        n_eff=n_eff,               # effective sample size of the difference series
+        n_eff_model=n_eff_model,   # effective sample size of the true-w series
+        n_eff_est=n_eff_est,
+        tau=tau,                   # integrated autocorr time of the difference (samples)
     )
 
 
@@ -550,7 +632,10 @@ def w_skill_by_depth(w_est, w_model):
     -------
     xr.Dataset, dim (depth)
         rms, mean_bias, corr, w_est_std, w_model_std, norm_rms,
-        w_est_mean, w_model_mean
+        w_est_mean, w_model_mean, and the autocorrelation-aware standard errors
+        of the three time means at each depth: w_est_mean_se, w_model_mean_se,
+        mean_bias_se (95% CI = mean +/- 1.96*se), plus n_eff (of the difference)
+        and tau (integrated autocorr time, samples). See mean_se_autocorr.
     """
     bias      = w_est - w_model
     rms       = np.sqrt((bias ** 2).mean('time'))
@@ -560,6 +645,18 @@ def w_skill_by_depth(w_est, w_model):
     ea = w_est   - w_est.mean('time')
     ma = w_model - w_model.mean('time')
     corr = (ea * ma).mean('time') / (est_std * mod_std)
+
+    # Autocorrelation-aware SE of each time mean, computed per depth (each depth's
+    # own decorrelation time). Looping over ~32 depths is cheap.
+    depth = w_est['depth']
+    nd = depth.size
+    est_se = np.full(nd, np.nan); mod_se = np.full(nd, np.nan)
+    bias_se = np.full(nd, np.nan); neff = np.full(nd, np.nan); tau = np.full(nd, np.nan)
+    for k in range(nd):
+        _, est_se[k], _, _        = mean_se_autocorr(w_est.isel(depth=k).values)
+        _, mod_se[k], _, _        = mean_se_autocorr(w_model.isel(depth=k).values)
+        _, bias_se[k], neff[k], tau[k] = mean_se_autocorr(bias.isel(depth=k).values)
+    _da = lambda a: xr.DataArray(a, dims='depth', coords={'depth': depth})
     return xr.Dataset(dict(
         rms=rms,
         mean_bias=bias.mean('time'),
@@ -569,6 +666,11 @@ def w_skill_by_depth(w_est, w_model):
         norm_rms=rms / mod_std,
         w_est_mean=w_est.mean('time'),
         w_model_mean=w_model.mean('time'),
+        w_est_mean_se=_da(est_se),
+        w_model_mean_se=_da(mod_se),
+        mean_bias_se=_da(bias_se),
+        n_eff=_da(neff),
+        tau=_da(tau),
     ))
 
 
