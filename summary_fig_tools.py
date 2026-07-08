@@ -770,6 +770,121 @@ def make_fig7(m, sumdir, load_cell):
         _render(rs, "7d_equator_single", "equator single cell — shape & height")
 
 
+# glider lon offsets shown as the rows of fig8 (one width per row, so the reader
+# can see how the time-mean <w> recovery and its CI change with array width).
+F8_OFFSETS = [0.5, 1.0, 1.5, 2.0]
+
+
+def make_fig8(m, sumdir, load_cell):
+    """fig8a-8e: the time-mean vertical velocity <w> and its confidence interval,
+    exactly like fig7 but with ONE ROW PER glider lon offset (0.5, 1.0, 1.5, 2.0)
+    instead of a single fixed width. Columns are the configs of the method group
+    plus a final total-over-depth forest panel; rows sweep the array width. All
+    panels share x-limits so the rows are directly comparable. See make_fig7 for
+    the SE/CI method and the est (solid, blue) vs true (dotted, red) encoding."""
+
+    def _render(keys, lookup, tag, group_lbl):
+        # keys: ordered list of (keyval, label) fixing the column layout;
+        # lookup(width, keyval) -> metrics row (Series) or None if absent.
+        grid = [(w, [(kv, lbl, lookup(w, kv)) for kv, lbl in keys]) for w in F8_OFFSETS]
+        grid = [(w, [(kv, lbl, r) for kv, lbl, r in present if r is not None])
+                for w, present in grid]
+        grid = [(w, present) for w, present in grid if present]
+        if not grid:
+            return
+        ncol, nrow = len(keys), len(grid)
+        fig, axes = plt.subplots(nrow, ncol + 1, figsize=(4.1 * (ncol + 1), 5.6 * nrow),
+                                 squeeze=False)
+        # first pass: per-depth profiles + shared x-limits across every row/config
+        Bcache, lo, hi = {}, 0.0, 0.0
+        for ri, (w, present) in enumerate(grid):
+            for kv, lbl, r in present:
+                with load_cell(r) as ds:
+                    B = ot.w_skill_by_depth(ds.w_est, ds.w_model)
+                Bcache[(ri, kv)] = B
+                for mean, se in ((B.w_model_mean, B.w_model_mean_se),
+                                 (B.w_est_mean, B.w_est_mean_se)):
+                    lo = min(lo, float(((mean - F7_Z * se) * W2DAY).min()))
+                    hi = max(hi, float(((mean + F7_Z * se) * W2DAY).max()))
+        pad = 0.08 * (hi - lo) or 0.1
+        for ri, (w, present) in enumerate(grid):
+            for ci, (kv, lbl) in enumerate(keys):
+                ax = axes[ri, ci]
+                B = Bcache.get((ri, kv))
+                if B is None:
+                    ax.set_visible(False)
+                    continue
+                z = B.depth.values
+                for mean, se, c, ls in ((B.w_model_mean, B.w_model_mean_se, F7_MOD_C, ":"),
+                                        (B.w_est_mean, B.w_est_mean_se, F7_EST_C, "-")):
+                    mu = mean.values * W2DAY; hw = F7_Z * se.values * W2DAY
+                    ax.fill_betweenx(z, mu - hw, mu + hw, color=c, alpha=0.18, lw=0)
+                    ax.plot(mu, z, color=c, ls=ls, lw=1.9)
+                ax.axvline(0, color="0.5", lw=0.8, zorder=0)
+                ax.set_xlim(lo - pad, hi + pad); ax.grid(alpha=0.3)
+                if ri == 0:
+                    ax.set_title(lbl)
+                if ri == nrow - 1:
+                    ax.set_xlabel(r"$\langle w\rangle$  (m day$^{-1}$)")
+                if ci == 0:
+                    ax.set_ylabel(f"offset = {w:g}°\ndepth (m)")
+                else:
+                    ax.set_yticklabels([])
+
+            # total-over-depth forest panel for this offset
+            axT = axes[ri, ncol]; yv = np.arange(len(present))[::-1]
+            for y, (kv, lbl, r) in zip(yv, present):
+                for off, c, mk, mkey, skey in (
+                        (+0.15, F7_MOD_C, "o", "w_model_mean", "w_model_mean_se"),
+                        (-0.15, F7_EST_C, "s", "w_est_mean",   "w_est_mean_se")):
+                    axT.errorbar(r[mkey] * W2DAY, y + off, xerr=F7_Z * r[skey] * W2DAY,
+                                 fmt=mk, color=c, capsize=3, ms=6, lw=1.6)
+            axT.axvline(0, color="0.5", lw=0.8)
+            axT.set_yticks(yv); axT.set_yticklabels([lbl for _, lbl, _ in present])
+            axT.set_ylim(-0.6, len(present) - 0.4); axT.grid(alpha=0.3, axis="x")
+            if ri == 0:
+                axT.set_title("total over depth")
+            if ri == nrow - 1:
+                axT.set_xlabel(r"total $\langle w\rangle$  (m day$^{-1}$)")
+
+        handles = [Line2D([0], [0], color=F7_EST_C, ls="-", lw=1.9,
+                          marker="s", label=r"estimated ($\pm$95% CI)"),
+                   Line2D([0], [0], color=F7_MOD_C, ls=":", lw=1.9,
+                          marker="o", label=r"true / model ($\pm$95% CI)")]
+        fig.tight_layout(rect=[0, 0, 1, 0.96])
+        fig.legend(handles=handles, loc="upper center",
+                   bbox_to_anchor=(0.5, 1.0), ncol=2, frameon=False)
+        fig.savefig(os.path.join(sumdir, f"fig{tag}.png"), dpi=150, bbox_inches="tight")
+        plt.show()
+
+    def _lat_lookup(w, lat, pat):
+        d = m[(m.pattern == pat) & np.isclose(m.center_lat, lat) & np.isclose(m.width, w)]
+        return d.iloc[0] if len(d) else None
+
+    for tag, pat, glbl in (("8a_shift", "shift", "shift array — cell center lat"),
+                           ("8e_shift_hex", "shift_hex", "shift hex array — cell center lat"),
+                           ("8b_equator3cell", "equator_3cell", "equator 3-cell — cell center lat")):
+        lats = sorted(m[m.pattern == pat].center_lat.unique())
+        keys = [(lat, _lat_lbl(lat)) for lat in lats]
+        if keys:
+            _render(keys, (lambda p: lambda w, lat: _lat_lookup(w, lat, p))(pat), tag, glbl)
+
+    ngs = sorted(m[m.family == "density"].n_gliders_cell.unique())
+    keys = [(ng, f"{int(ng)} gliders") for ng in ngs]
+    if keys:
+        def _dens_lookup(w, ng):
+            d = m[(m.family == "density") & (m.n_gliders_cell == ng) & np.isclose(m.width, w)]
+            return d.iloc[0] if len(d) else None
+        _render(keys, _dens_lookup, "8c_density", "density array — gliders per cell")
+
+    keys = [(pat, EQS_STYLE[pat]["lbl"]) for pat in EQS_PATS if (m.pattern == pat).any()]
+    if keys:
+        def _eqs_lookup(w, pat):
+            d = m[(m.pattern == pat) & np.isclose(m.width, w)]
+            return d.iloc[0] if len(d) else None
+        _render(keys, _eqs_lookup, "8d_equator_single", "equator single cell — shape & height")
+
+
 # ============================================================================
 # Figure builders — exp1 vs exp2 comparison
 # ============================================================================
@@ -1133,3 +1248,130 @@ def make_fig7_compare(M, outdir, load_cell):
             cfgs.append((EQS_STYLE[pat]["lbl"], rows))
     if cfgs:
         _match(cfgs, "7d_equator_single", "equator single cell — shape & height")
+
+
+def make_fig8_compare(M, outdir, load_cell):
+    """fig8a-8e comparison: like make_fig7_compare but with ONE ROW PER glider lon
+    offset (0.5, 1.0, 1.5, 2.0) instead of a single fixed width. Columns are the
+    configs of the method group plus a total-over-depth forest panel; rows sweep
+    the array width. Per config: the shared model truth (gray dotted) plus the
+    estimated <w> +/- 95% CI for exp1 (solid blue) and exp2 (dashed orange). All
+    panels share x-limits so rows are comparable. load_cell(exp, row) -> Dataset."""
+
+    def _render(keys, lookup, tag, group_lbl):
+        # keys: ordered list of (keyval, label); lookup(width, keyval) -> {1:row,2:row}
+        # or None if either experiment lacks that config at that width.
+        grid = [(w, [(kv, lbl, lookup(w, kv)) for kv, lbl in keys]) for w in F8_OFFSETS]
+        grid = [(w, [(kv, lbl, rows) for kv, lbl, rows in present if rows is not None])
+                for w, present in grid]
+        grid = [(w, present) for w, present in grid if present]
+        if not grid:
+            return
+        ncol, nrow = len(keys), len(grid)
+        fig, axes = plt.subplots(nrow, ncol + 1, figsize=(4.1 * (ncol + 1), 5.6 * nrow),
+                                 squeeze=False)
+        Bcache, lo, hi = {}, 0.0, 0.0
+        for ri, (w, present) in enumerate(grid):
+            for kv, lbl, rows in present:
+                B = {}
+                for e in (1, 2):
+                    with load_cell(e, rows[e]) as ds:
+                        B[e] = ot.w_skill_by_depth(ds.w_est, ds.w_model)
+                Bcache[(ri, kv)] = B
+                for mean, se in ((B[1].w_model_mean, B[1].w_model_mean_se),
+                                 (B[1].w_est_mean, B[1].w_est_mean_se),
+                                 (B[2].w_est_mean, B[2].w_est_mean_se)):
+                    lo = min(lo, float(((mean - F7_Z * se) * W2DAY).min()))
+                    hi = max(hi, float(((mean + F7_Z * se) * W2DAY).max()))
+        pad = 0.08 * (hi - lo) or 0.1
+        for ri, (w, present) in enumerate(grid):
+            for ci, (kv, lbl) in enumerate(keys):
+                ax = axes[ri, ci]
+                B = Bcache.get((ri, kv))
+                if B is None:
+                    ax.set_visible(False)
+                    continue
+                zt = B[1].depth.values                   # shared model truth (exp1)
+                mu = B[1].w_model_mean.values * W2DAY
+                hw = F7_Z * B[1].w_model_mean_se.values * W2DAY
+                ax.fill_betweenx(zt, mu - hw, mu + hw, color=F7C_TRUE_C, alpha=0.13, lw=0)
+                ax.plot(mu, zt, color=F7C_TRUE_C, ls=":", lw=1.5)
+                for e in (1, 2):
+                    z = B[e].depth.values
+                    mu = B[e].w_est_mean.values * W2DAY
+                    hw = F7_Z * B[e].w_est_mean_se.values * W2DAY
+                    ax.fill_betweenx(z, mu - hw, mu + hw, color=F7C_EXP_C[e], alpha=0.15, lw=0)
+                    ax.plot(mu, z, color=F7C_EXP_C[e], ls=EXP_STYLE[e]["ls"], lw=1.9)
+                ax.axvline(0, color="0.5", lw=0.8, zorder=0)
+                ax.set_xlim(lo - pad, hi + pad); ax.grid(alpha=0.3)
+                if ri == 0:
+                    ax.set_title(lbl)
+                if ri == nrow - 1:
+                    ax.set_xlabel(r"$\langle w\rangle$  (m day$^{-1}$)")
+                if ci == 0:
+                    ax.set_ylabel(f"offset = {w:g}°\ndepth (m)")
+                else:
+                    ax.set_yticklabels([])
+
+            axT = axes[ri, ncol]; yv = np.arange(len(present))[::-1]
+            for y, (kv, lbl, rows) in zip(yv, present):
+                r1 = rows[1]
+                axT.errorbar(r1["w_model_mean"] * W2DAY, y + 0.22,
+                             xerr=F7_Z * r1["w_model_mean_se"] * W2DAY,
+                             fmt="o", color=F7C_TRUE_C, capsize=3, ms=6, lw=1.6)
+                for e, off, mk in ((1, 0.0, "s"), (2, -0.22, "D")):
+                    r = rows[e]
+                    axT.errorbar(r["w_est_mean"] * W2DAY, y + off,
+                                 xerr=F7_Z * r["w_est_mean_se"] * W2DAY,
+                                 fmt=mk, color=F7C_EXP_C[e], capsize=3, ms=6, lw=1.6)
+            axT.axvline(0, color="0.5", lw=0.8)
+            axT.set_yticks(yv); axT.set_yticklabels([lbl for _, lbl, _ in present])
+            axT.set_ylim(-0.6, len(present) - 0.4); axT.grid(alpha=0.3, axis="x")
+            if ri == 0:
+                axT.set_title("total over depth")
+            if ri == nrow - 1:
+                axT.set_xlabel(r"total $\langle w\rangle$  (m day$^{-1}$)")
+
+        handles = [Line2D([0], [0], color=F7C_TRUE_C, ls=":", lw=1.9, marker="o",
+                          label=r"true / model ($\pm$95% CI)"),
+                   Line2D([0], [0], color=F7C_EXP_C[1], ls="-", lw=1.9, marker="s",
+                          label=EXP_STYLE[1]["lbl"] + r" ($\pm$95% CI)"),
+                   Line2D([0], [0], color=F7C_EXP_C[2], ls="--", lw=1.9, marker="D",
+                          label=EXP_STYLE[2]["lbl"] + r" ($\pm$95% CI)")]
+        fig.tight_layout(rect=[0, 0, 1, 0.96])
+        fig.legend(handles=handles, loc="upper center",
+                   bbox_to_anchor=(0.5, 1.0), ncol=3, frameon=False)
+        fig.savefig(os.path.join(outdir, f"fig{tag}_compare.png"), dpi=150, bbox_inches="tight")
+        plt.show()
+
+    def _rows_for(key_mask, key_col, key_val, w):
+        rows = {}
+        for e in (1, 2):
+            d = M[e][key_mask(M[e]) & (M[e][key_col] == key_val) & np.isclose(M[e].width, w)] \
+                if key_col != "center_lat" else \
+                M[e][key_mask(M[e]) & np.isclose(M[e].center_lat, key_val) & np.isclose(M[e].width, w)]
+            if d.empty:
+                return None
+            rows[e] = d.iloc[0]
+        return rows
+
+    for tag, pat, glbl in (("8a_shift", "shift", "shift array — cell center lat"),
+                           ("8e_shift_hex", "shift_hex", "shift hex — cell center lat"),
+                           ("8b_equator3cell", "equator_3cell", "equator 3-cell — cell center lat")):
+        mask = (lambda p: (lambda mm: mm.pattern == p))(pat)
+        keys = [(lat, _lat_lbl(lat)) for lat in sorted(M[1][mask(M[1])].center_lat.unique())]
+        if keys:
+            _render(keys, (lambda mk: lambda w, lat: _rows_for(mk, "center_lat", lat, w))(mask),
+                    tag, glbl)
+
+    mask = lambda mm: mm.family == "density"
+    keys = [(ng, f"{int(ng)} gliders") for ng in sorted(M[1][mask(M[1])].n_gliders_cell.unique())]
+    if keys:
+        _render(keys, lambda w, ng: _rows_for(mask, "n_gliders_cell", ng, w),
+                "8c_density", "density array — gliders per cell")
+
+    keys = [(pat, EQS_STYLE[pat]["lbl"]) for pat in EQS_PATS if (M[1].pattern == pat).any()]
+    if keys:
+        _render(keys,
+                lambda w, pat: _rows_for((lambda p: lambda mm: mm.pattern == p)(pat), "pattern", pat, w),
+                "8d_equator_single", "equator single cell — shape & height")

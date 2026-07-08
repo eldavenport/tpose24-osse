@@ -16,7 +16,7 @@ equatorial Pacific, using TPOSE24 model output as truth.
   the W-skill summary figures; used by `experiment_*/summary.ipynb` and
   `compare_exp_1_2` (each notebook just loads `metrics.csv` and calls the builders).
 
-`osse_tools.py` provides two workflows:
+`osse_tools.py` provides three workflows:
 
 - **Vertical velocity:** sample U, V at the glider array, fit a plane to get the
   horizontal divergence, integrate to estimate w, and compare against the model's
@@ -30,6 +30,14 @@ equatorial Pacific, using TPOSE24 model output as truth.
     - I chose a somewhat arbitrary metric to measure similarity between the PDFs.
     - Jensen-Shannon Divergence (slightly different from KL divergence) is 0 if the
       two PDFs are identical and 1 if they are disjoint (we want it to be small).
+- **Footprint error maps (array design):** spatial patterns of the errors of a particular footprint
+  (`footprint_offsets`: hexagon/square/square4/diamond, width×height) at every grid
+  point and map the error it makes estimating the depth-/time-mean w — plane-fit
+  divergence vs. like-computed true area-mean divergence, ×H → w error in m/day
+  (`footprint_w_error`; Tier 2 = discrete stencil, Tier 1 = filled footprint). The
+  estimator and truth are linear and time-averaging commutes through them, so the
+  3-month-mean-w error is evaluated directly on the mean field. 
+  `run_footprint_maps.py` reuses the cached `means` from `run_domain_maps.py`.
 
 # Misc Notes
 

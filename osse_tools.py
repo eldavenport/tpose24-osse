@@ -969,3 +969,186 @@ def decorrelation_scale(field, lon, lat, max_lag_km=600.0, thresh=1.0 / np.e):
     """
     cur = autocorr_curves(field, lon, lat, max_lag_km=max_lag_km)
     return decorr_scale_from_curves(cur, thresh=thresh)
+
+
+# ---------------------------------------------------------------------------
+# Footprint plane-fit error maps  (array-design diagnostic)
+# ---------------------------------------------------------------------------
+# For a candidate glider footprint of a given shape and size, map the error the
+# plane-fit w estimator makes across the whole domain. The estimator (sample ->
+# plane fit -> divergence -> depth integrate) and the truth (area-mean divergence)
+# are both LINEAR in the velocity field, and time-averaging commutes through them,
+# so the error in the 3-month / depth-mean w equals the error evaluated on the
+# time-and-depth-mean field. These maps therefore operate on the mean U, V
+# (means['U'], means['V'] from run_domain_maps' cache) -- no per-snapshot loop.
+#
+# w at the base of the sampled layer = H * depth-mean divergence (depth-averaging
+# commutes with the horizontal divergence), so we map
+#     w_err = H * (planefit_divergence - true_area_mean_divergence)
+# Tier 2 uses the discrete glider stencil; Tier 1 fills the footprint (best case,
+# dense sampling -> the intrinsic aliasing floor of a footprint of that size).
+
+FOOTPRINT_SHAPES = ('hexagon', 'square', 'square4', 'diamond')
+
+
+def footprint_offsets(shape, width_deg, height_deg):
+    """
+    Glider (lat, lon) offsets (deg, relative to the array centre) for a footprint
+    inscribed in a width_deg (zonal) x height_deg (meridional) box.
+
+    hexagon : 6 gliders -- E/W vertices on the equator, 4 off-axis (pointy E-W).
+    square  : 6 gliders -- 4 box corners + the 2 E/W edge midpoints (matches the
+              existing rectangle configs).
+    square4 : 4 gliders -- the 4 box corners only (fair 4-glider peer of diamond).
+    diamond : 4 gliders -- the N/S/E/W tips (edge midpoints of the box).
+    """
+    w, h = width_deg / 2.0, height_deg / 2.0
+    if shape == 'hexagon':
+        return [(0.0, w), (h, w / 2), (h, -w / 2),
+                (0.0, -w), (-h, -w / 2), (-h, w / 2)]
+    if shape == 'square':
+        return [(h, w), (h, -w), (-h, -w), (-h, w), (0.0, w), (0.0, -w)]
+    if shape == 'square4':
+        return [(h, w), (h, -w), (-h, -w), (-h, w)]
+    if shape == 'diamond':
+        return [(h, 0.0), (0.0, w), (-h, 0.0), (0.0, -w)]
+    raise ValueError(f'unknown shape {shape!r}; choose from {FOOTPRINT_SHAPES}')
+
+
+def footprint_outline(shape, width_deg, height_deg):
+    """Closed polygon vertices (lat, lon) tracing a footprint's boundary, for the
+    convex-hull area (truth averaging) and the filled-fit region (Tier 1)."""
+    w, h = width_deg / 2.0, height_deg / 2.0
+    if shape == 'hexagon':
+        return [(0.0, w), (h, w / 2), (h, -w / 2),
+                (0.0, -w), (-h, -w / 2), (-h, w / 2)]
+    if shape in ('square', 'square4'):
+        return [(h, w), (h, -w), (-h, -w), (-h, w)]
+    if shape == 'diamond':
+        return [(h, 0.0), (0.0, w), (-h, 0.0), (0.0, -w)]
+    raise ValueError(f'unknown shape {shape!r}; choose from {FOOTPRINT_SHAPES}')
+
+
+def colocate_uv(meanU, meanV):
+    """
+    Interpolate the staggered mean U (YC, XG) and V (YG, XC) onto the common tracer
+    grid (YC, XC). Returns (U, V, lon, lat) with U, V as (nlat, nlon) float arrays.
+    """
+    lon = np.asarray(meanV['XC'].values, float)   # V already on XC
+    lat = np.asarray(meanU['YC'].values, float)   # U already on YC
+    U = meanU.interp(XG=xr.DataArray(lon, dims='XC', coords={'XC': lon})).values
+    V = meanV.interp(YG=xr.DataArray(lat, dims='YC', coords={'YC': lat})).values
+    return np.asarray(U, float), np.asarray(V, float), lon, lat
+
+
+def _planefit_slope_weights(offsets, lat_deg):
+    """(wx, wy) weight vectors s.t. du/dx = wx . u_samples, dv/dy = wy . v_samples
+    for a plane fit u = a + b*x + c*y over `offsets`, at latitude `lat_deg`.
+    Longitude offsets are scaled to metres with cos(lat); latitude with a constant."""
+    offs = np.asarray(offsets, float)                 # (N, 2) = (dlat, dlon)
+    deg_to_m = _KM_PER_DEG * 1000.0
+    x = offs[:, 1] * np.cos(np.radians(lat_deg)) * deg_to_m
+    y = offs[:, 0] * deg_to_m
+    A = np.column_stack([np.ones(len(offs)), x, y])   # (N, 3)
+    Ainv = np.linalg.pinv(A)                          # (3, N)
+    return Ainv[1], Ainv[2]
+
+
+def planefit_divergence_stencil(U, V, lon, lat, offsets):
+    """
+    Plane-fit horizontal divergence estimated by a discrete glider stencil centred
+    at every grid point (Tier 2). U, V are (nlat, nlon) on (lat, lon).
+
+    The stencil is fixed in offset space, so sampling glider k over all centres is
+    one interpolation of the whole field onto the grid shifted by that offset.
+    """
+    from scipy.interpolate import RegularGridInterpolator
+    rgiU = RegularGridInterpolator((lat, lon), U, bounds_error=False, fill_value=np.nan)
+    rgiV = RegularGridInterpolator((lat, lon), V, bounds_error=False, fill_value=np.nan)
+    LON, LAT = np.meshgrid(lon, lat)
+    ny, nx = LAT.shape
+    N = len(offsets)
+    Us = np.empty((N, ny, nx)); Vs = np.empty((N, ny, nx))
+    for k, (dlat, dlon) in enumerate(offsets):
+        pts = np.stack([(LAT + dlat).ravel(), (LON + dlon).ravel()], axis=-1)
+        Us[k] = rgiU(pts).reshape(ny, nx)
+        Vs[k] = rgiV(pts).reshape(ny, nx)
+    div = np.full((ny, nx), np.nan)
+    for i, la in enumerate(lat):                      # weights depend on lat via cos
+        wx, wy = _planefit_slope_weights(offsets, la)
+        div[i] = wx @ Us[:, i, :] + wy @ Vs[:, i, :]
+    return div
+
+
+def _shape_cell_mask(shape, width_deg, height_deg, dlon, dlat):
+    """Boolean footprint mask on a local (2*ry+1, 2*rx+1) cell window, plus the
+    local x/y cell-index coordinate arrays (integers, centred at 0)."""
+    from matplotlib.path import Path
+    rx = max(int(round((width_deg / 2.0) / dlon)), 1)
+    ry = max(int(round((height_deg / 2.0) / dlat)), 1)
+    jx = np.arange(-rx, rx + 1)
+    iy = np.arange(-ry, ry + 1)
+    CX, CY = np.meshgrid(jx * dlon, iy * dlat)        # local degrees
+    poly = np.array([[p[1], p[0]] for p in footprint_outline(shape, width_deg, height_deg)])
+    mask = Path(poly).contains_points(
+        np.column_stack([CX.ravel(), CY.ravel()])).reshape(CX.shape)
+    IX, IY = np.meshgrid(jx.astype(float), iy.astype(float))
+    return mask, IX, IY
+
+
+def true_areamean_divergence(U, V, lon, lat, shape, width_deg, height_deg):
+    """True horizontal divergence of the mean field, area-averaged over the
+    footprint hull centred at every grid point (the like-for-like truth)."""
+    from scipy.ndimage import correlate
+    fx, _ = gradient_components(U, lon, lat)
+    _, fy = gradient_components(V, lon, lat)
+    div_true = fx + fy
+    dlon = _grid_spacing_deg(lon); dlat = _grid_spacing_deg(lat)
+    mask, _, _ = _shape_cell_mask(shape, width_deg, height_deg, dlon, dlat)
+    kern = mask.astype(float) / mask.sum()
+    return correlate(div_true, kern, mode='nearest')
+
+
+def filled_planefit_divergence(U, V, lon, lat, shape, width_deg, height_deg):
+    """
+    Plane-fit divergence using EVERY grid point inside the footprint (Tier 1) at
+    every centre -- the best-case, dense-sampling fit. For a footprint symmetric in
+    x and y the least-squares slopes decouple, so du/dx = <x*u>/<x^2> etc., which is
+    a correlation of the field with the (x*mask) / (y*mask) kernels.
+    """
+    from scipy.ndimage import correlate
+    dlon = _grid_spacing_deg(lon); dlat = _grid_spacing_deg(lat)
+    deg_to_m = _KM_PER_DEG * 1000.0
+    mask, IX, IY = _shape_cell_mask(shape, width_deg, height_deg, dlon, dlat)
+    m = mask.astype(float)
+    Kx = IX * m; Ky = IY * m
+    Sxx = float((IX ** 2 * m).sum()); Syy = float((IY ** 2 * m).sum())
+    # du/d(col index) and dv/d(row index); convert index -> metres (cos(lat) per row)
+    du_di = correlate(U, Kx, mode='nearest') / Sxx
+    dv_dj = correlate(V, Ky, mode='nearest') / Syy
+    cos = np.cos(np.radians(lat))[:, None]
+    du_dx = du_di / (dlon * cos * deg_to_m)
+    dv_dy = dv_dj / (dlat * deg_to_m)
+    return du_dx + dv_dy
+
+
+def footprint_w_error(means, shape, width_deg, height_deg, depth_m, tier=2):
+    """
+    Map the error (m/day) a footprint's plane fit makes in the depth-/time-mean w at
+    the base of the 0..depth_m layer: w_err = depth_m * (div_est - div_true) * 86400.
+
+    means : dict with 'U' (YC,XG) and 'V' (YG,XC) time-and-depth-mean DataArrays.
+    tier  : 2 = discrete glider stencil; 1 = filled footprint (dense-sampling floor).
+    Returns an (nlat, nlon) DataArray on the tracer grid (coords lon=XC, lat=YC).
+    """
+    U, V, lon, lat = colocate_uv(means['U'], means['V'])
+    div_true = true_areamean_divergence(U, V, lon, lat, shape, width_deg, height_deg)
+    if tier == 2:
+        div_est = planefit_divergence_stencil(U, V, lon, lat,
+                                              footprint_offsets(shape, width_deg, height_deg))
+    elif tier == 1:
+        div_est = filled_planefit_divergence(U, V, lon, lat, shape, width_deg, height_deg)
+    else:
+        raise ValueError('tier must be 1 or 2')
+    w_err = depth_m * (div_est - div_true) * 86400.0
+    return xr.DataArray(w_err, dims=('YC', 'XC'), coords={'YC': lat, 'XC': lon})
