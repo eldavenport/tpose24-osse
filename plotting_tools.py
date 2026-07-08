@@ -407,10 +407,38 @@ def render_velocity_maps(here, efig, run_dir, iters, spinup_end="2012-10-11", ma
 
 
 
-def plot_domain_grid(panels, cbar_label, cmap, suptitle, fname,
-                     diverging=False, ncols=3, pct=(2, 98)):
+N_CONTOUR_LEVELS = 100
+
+
+def _group_limits(panels, groups, diverging, pct):
     """
-    Grid of pcolormesh domain maps, styled like the demo_domain mean-velocity figs.
+    Per-panel (vmin, vmax) with panels sharing a `groups` label sharing color limits.
+
+    Limits come from the pooled finite values of every panel in the group: symmetric
+    ±percentile for diverging fields, else the (low, high) percentiles. This lets e.g.
+    the U and V decorrelation panels share one scale so they're directly comparable.
+    """
+    lims = {}
+    for g in dict.fromkeys(groups):
+        pooled = np.concatenate([np.asarray(v).ravel()
+                                 for (v, *_), gg in zip(panels, groups) if gg == g])
+        pooled = pooled[np.isfinite(pooled)]
+        if diverging:
+            m = float(np.nanpercentile(np.abs(pooled), pct[1]))
+            lims[g] = (-m, m)
+        else:
+            lims[g] = (float(np.nanpercentile(pooled, pct[0])),
+                       float(np.nanpercentile(pooled, pct[1])))
+    return [lims[g] for g in groups]
+
+
+def plot_domain_grid(panels, cbar_label, cmap, suptitle, fname,
+                     diverging=False, ncols=3, pct=(2, 98), vlim=None, groups=None):
+    """
+    Grid of filled-contour domain maps, styled like the demo_domain mean-velocity figs.
+
+    Rendered with contourf (N_CONTOUR_LEVELS filled levels) and clean, auto-located
+    colorbar ticks.
 
     Parameters
     ----------
@@ -422,31 +450,127 @@ def plot_domain_grid(panels, cbar_label, cmap, suptitle, fname,
         zero-centred cmap; otherwise sequential limits at the `pct` percentiles.
     ncols : int
         Panels per row (extra axes are hidden).
+    vlim : (vmin, vmax) or None
+        One fixed color limit for every panel (e.g. (-1, 1) for a correlation map);
+        overrides percentile scaling and `groups`.
+    groups : list of hashable or None
+        Same length as `panels`; panels sharing a label share color limits (pooled
+        percentiles). Overrides per-panel scaling. Ignored when `vlim` is given.
     """
+    import matplotlib.ticker as mticker
+    import matplotlib.cm as mcm
+    from matplotlib.colors import Normalize
     n = len(panels)
     nrows = int(np.ceil(n / ncols))
     fig, axes = plt.subplots(nrows, ncols, figsize=(6.7 * ncols, 4.8 * nrows),
                              squeeze=False)
     axf = axes.ravel()
-    for ax, (vals, xx, yy, title) in zip(axf, panels):
+
+    if vlim is not None:
+        panel_lims = [vlim] * n
+    elif groups is not None:
+        panel_lims = _group_limits(panels, groups, diverging, pct)
+    else:
+        panel_lims = None  # per-panel, computed below
+
+    for i, (ax, (vals, xx, yy, title)) in enumerate(zip(axf, panels)):
         vals = np.asarray(vals)
-        if diverging:
-            vmax = float(np.nanpercentile(np.abs(vals), pct[1]))
-            kw = dict(cmap=cmap, vmin=-vmax, vmax=vmax)
+        if panel_lims is not None:
+            vmin, vmax = panel_lims[i]
+        elif diverging:
+            vmax = float(np.nanpercentile(np.abs(vals), pct[1])); vmin = -vmax
         else:
-            kw = dict(cmap=cmap,
-                      vmin=float(np.nanpercentile(vals, pct[0])),
-                      vmax=float(np.nanpercentile(vals, pct[1])))
-        im = ax.pcolormesh(xx, yy, vals, shading='auto', **kw)
-        plt.colorbar(im, ax=ax, shrink=0.8, pad=0.02, label=cbar_label)
+            vmin = float(np.nanpercentile(vals, pct[0]))
+            vmax = float(np.nanpercentile(vals, pct[1]))
+        levels = np.linspace(vmin, vmax, N_CONTOUR_LEVELS)
+        ax.contourf(xx, yy, vals, levels=levels, cmap=cmap, extend='both')
+        # Build the colorbar from a continuous Normalize (not the contourf's discrete
+        # boundaries) so evenly-spaced tick values plot at evenly-spaced positions —
+        # a contourf colorbar snaps ticks to level edges and looks irregular.
+        sm = mcm.ScalarMappable(norm=Normalize(vmin, vmax), cmap=cmap)
+        cbar = plt.colorbar(sm, ax=ax, shrink=0.8, pad=0.02, label=cbar_label,
+                            extend='both',
+                            ticks=mticker.MaxNLocator(nbins=6, symmetric=diverging))
+        cbar.ax.tick_params(labelsize=9)
         ax.axhline(0, color='k', lw=0.5, ls=':')
         ax.set_xlabel('Longitude (°E)')
         ax.set_ylabel('Latitude (°N)')
         ax.set_title(title)
     for ax in axf[n:]:
         ax.axis('off')
-    fig.suptitle(suptitle, fontsize=13)
-    fig.tight_layout()
+    # reserve a constant absolute headroom for the suptitle regardless of nrows
+    h = 4.8 * nrows
+    fig.tight_layout(rect=[0, 0, 1, 1 - 0.45 / h])
+    fig.suptitle(suptitle, fontsize=13, y=1 - 0.10 / h)
+    fig.savefig(fname, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    return fname
+
+
+def plot_autocorr_curves(per_var, suptitle, fname, thresh=None, xmax_deg=4.0,
+                         span_deg=None, ref_levels=()):
+    """
+    Latitude-band-averaged autocorrelation vs separation, one panel per variable.
+
+    Parameters
+    ----------
+    per_var : list of (var_title, bands_dict)
+        bands_dict maps a band label -> dict(sep_z, r_z, sep_m, r_m) from
+        osse_tools.band_autocorr (separations in degrees, correlations dimensionless).
+    thresh : float or None
+        If given, draw a horizontal reference line (e.g. 1/e) where the decorrelation
+        scale is read off.
+    xmax_deg : float
+        Right limit of the separation axis (degrees).
+    span_deg : (lo, hi) or None
+        Shade a candidate array-span window (degrees) — the range of array sizes over
+        which you'd read off the coherence.
+    ref_levels : iterable of float
+        Extra horizontal reference correlations to mark (e.g. 0.7 as a plane-fit-ok
+        guideline).
+
+    Zonal curves are solid, meridional dashed; each latitude band gets its own color.
+    """
+    n = len(per_var)
+    fig, axes = plt.subplots(1, n, figsize=(6.2 * n, 4.6), squeeze=False)
+    axf = axes.ravel()
+    band_labels = list(dict.fromkeys(
+        lbl for _, bands in per_var for lbl in bands))
+    colors = {lbl: c for lbl, c in zip(band_labels, plt.cm.viridis(
+        np.linspace(0, 0.85, max(len(band_labels), 1))))}
+    for ax, (title, bands) in zip(axf, per_var):
+        if span_deg is not None:
+            ax.axvspan(span_deg[0], span_deg[1], color='0.85', alpha=0.6, zorder=0)
+        for lbl, cur in bands.items():
+            ax.plot(cur['sep_z'], cur['r_z'], '-', color=colors[lbl], lw=1.8)
+            ax.plot(cur['sep_m'], cur['r_m'], '--', color=colors[lbl], lw=1.8)
+        if thresh is not None:
+            ax.axhline(thresh, color='0.4', lw=0.8, ls=':')
+            ax.text(xmax_deg, thresh, ' 1/e', va='center', ha='left',
+                    color='0.4', fontsize=9)
+        for lev in ref_levels:
+            ax.axhline(lev, color='0.55', lw=0.8, ls='--')
+            ax.text(xmax_deg, lev, f' {lev:g}', va='center', ha='left',
+                    color='0.55', fontsize=9)
+        ax.axhline(0, color='k', lw=0.5)
+        ax.set_xlim(0, xmax_deg)
+        ax.set_ylim(-0.25, 1.02)
+        ax.set_xlabel('separation (°)')
+        ax.set_ylabel('autocorrelation')
+        ax.set_title(title)
+    # legend: bands (color) + direction (linestyle) [+ array-span patch]
+    from matplotlib.lines import Line2D
+    from matplotlib.patches import Patch
+    handles = [Line2D([0], [0], color=colors[l], lw=1.8, label=l) for l in band_labels]
+    handles += [Line2D([0], [0], color='0.3', lw=1.8, ls='-', label='zonal'),
+                Line2D([0], [0], color='0.3', lw=1.8, ls='--', label='meridional')]
+    if span_deg is not None:
+        handles.append(Patch(facecolor='0.85', alpha=0.6,
+                             label=f'array span {span_deg[0]:g}–{span_deg[1]:g}°'))
+    fig.legend(handles=handles, loc='upper center', ncol=len(handles),
+               frameon=False, bbox_to_anchor=(0.5, 1.0))
+    fig.suptitle(suptitle, fontsize=13, y=1.10)
+    fig.tight_layout(rect=[0, 0, 1, 0.94])
     fig.savefig(fname, dpi=150, bbox_inches='tight')
     plt.close(fig)
     return fname

@@ -29,7 +29,7 @@ from xmitgcm import open_mdsdataset
 # MITgcm C-grid stagger of each diagnostic, its vertical coord, and a short alias
 _GRID   = {'UVEL': ('XG', 'YC'), 'VVEL': ('XC', 'YG'),
            'THETA': ('XC', 'YC'), 'SALT': ('XC', 'YC'), 'WVEL': ('XC', 'YC')}
-_ZCOORD = {'WVEL': 'Zl'}  # default 'Z' (cell centres); WVEL on Zl (interfaces)
+_ZCOORD = {'WVEL': 'Zl'}  # default 'Z' (cell centers); WVEL on Zl (interfaces)
 _RENAME = {'UVEL': 'U', 'VVEL': 'V', 'THETA': 'T', 'SALT': 'S', 'WVEL': 'W'}
 
 
@@ -82,7 +82,7 @@ def load_model(run_dir, iters, ref_date='2012-10-01', delta_t=300):
 
 
 def _latlon_to_m(lats, lons):
-    """projection of lat/lon (deg) to metres about their centroid."""
+    """projection of lat/lon (deg) to meters about their centroid."""
     lats, lons = np.asarray(lats), np.asarray(lons)
     lat_c, lon_c = lats.mean(), lons.mean()
     deg_to_m = np.pi / 180 * 6371000.0
@@ -119,7 +119,7 @@ def sample_fields(ds, positions, vars=('UVEL', 'VVEL', 'THETA', 'SALT'),
     vars : tuple of str
         MITgcm diagnostics to sample. Default UVEL, VVEL, THETA, SALT.
     max_depth, dz_obs : float
-        Sampling depth range and interval in metres. Defaults 70 and 2.
+        Sampling depth range and interval in meters. Defaults 70 and 2.
     min_depth : float
         Shallowest depth sampled, e.g. 8 if the array can't see above 8 m.
         compute_w_planefit assumes w=0 at this depth rather than at the surface.
@@ -148,7 +148,7 @@ def model_region(ds, positions, vars=('UVEL', 'VVEL', 'THETA', 'SALT'),
     """
     The 'true' estimate: model fields at every grid point inside the array hull.
 
-    Each field is interpolated to the tracer cell centres (co-locating U, V, T, S)
+    Each field is interpolated to the tracer cell centers (co-locating U, V, T, S)
     and to the obs depths, then masked to the convex hull of positions and stacked
     over the horizontal points. Compare its distribution against sample_fields output.
 
@@ -750,13 +750,13 @@ def depth_mean_series(ds, var, max_depths):
 
     Reads the 0-250 m water column once and returns the depth-mean *time series*
     (time, y, x) for each requested cutoff, so several depth means share a single
-    read of the data. WVEL uses the Zl interface coordinate, U/V the Z centres.
+    read of the data. WVEL uses the Zl interface coordinate, U/V the Z centers.
 
     Parameters
     ----------
     ds : xr.Dataset  (from load_model)
     var : str        one of 'UVEL', 'VVEL', 'WVEL'
-    max_depths : iterable of float   depth cutoffs in metres, e.g. (70, 120, 250)
+    max_depths : iterable of float   depth cutoffs in meters, e.g. (70, 120, 250)
 
     Returns
     -------
@@ -781,11 +781,11 @@ def _grid_spacing_deg(coord):
 
 def gradient_components(field, lon, lat):
     """
-    Horizontal derivatives d/dx, d/dy (per metre) of a field on a lon/lat grid.
+    Horizontal derivatives d/dx, d/dy (per meter) of a field on a lon/lat grid.
 
     Accepts a 2-D (y, x) field or a 3-D (time, y, x) stack; the last two axes are
-    latitude then longitude. Uses second-order centred differences, converting the
-    degree spacing to metres with the local cos(lat) factor for the zonal term.
+    latitude then longitude. Uses second-order centered differences, converting the
+    degree spacing to meters with the local cos(lat) factor for the zonal term.
 
     Returns
     -------
@@ -804,7 +804,7 @@ def gradient_components(field, lon, lat):
 
 
 def gradient_magnitude(field, lon, lat):
-    """Magnitude sqrt((d/dx)^2 + (d/dy)^2) (per metre) of a field; see gradient_components."""
+    """Magnitude sqrt((d/dx)^2 + (d/dy)^2) (per meter) of a field; see gradient_components."""
     fx, fy = gradient_components(field, lon, lat)
     return np.hypot(fx, fy)
 
@@ -864,26 +864,25 @@ def _efold_lag(c, thresh):
     return frac
 
 
-def decorrelation_scale(field, lon, lat, max_lag_km=600.0, thresh=1.0 / np.e):
+def autocorr_curves(field, lon, lat, max_lag_km=600.0):
     """
-    Isotropic spatial decorrelation length (km) at each grid point of a field.
+    Zonal and meridional lag-correlation curves of a (time, y, x) field.
 
-    From the temporal anomalies of a (time, y, x) field: at every point the anomaly
-    time series is correlated against its neighbours along x and along y, and the
-    zonal (Lx) and meridional (Ly) separations at which the lag-correlation first
-    falls to `thresh` (default 1/e) are found by interpolation. The isotropic scale
-    returned is the geometric mean sqrt(Lx * Ly). Scales that exceed `max_lag_km`
-    are capped at that window.
+    At every grid point the temporal anomaly is normalised to unit variance, so the
+    time average of the product of two points IS their Pearson correlation. For each
+    separation the forward/backward correlations are averaged (see _lag_corr_curve),
+    giving the dimensionless autocorrelation vs separation along x and along y.
 
-    Returns
+    Returns (bundled in a dict so callers can pick what they need)
     -------
-    (L, Lx, Ly) : each a (y, x) float32 array in km (NaN where undefined)
+    cx, cy : (nlag+1, y, x) float32   correlation at lag 0..nlag (zonal, meridional)
+    sep_x_deg, sep_y_deg : (nlag+1,)  separation of each lag in degrees
+    dx_km : (y,)  zonal grid spacing in km (varies with lat);  dy_km : float
+    valid : (y, x) bool  points with non-degenerate time series
     """
     f = np.asarray(field, np.float32)
-    _, Ny, Nx = f.shape
     mean = f.mean(0)
-    std = f.std(0)
-    std = np.where(std == 0, np.nan, std)
+    std = np.where(f.std(0) == 0, np.nan, f.std(0))
     an = (f - mean) / std
     valid = np.isfinite(an[0])
     an = np.nan_to_num(an, copy=False)
@@ -895,11 +894,78 @@ def decorrelation_scale(field, lon, lat, max_lag_km=600.0, thresh=1.0 / np.e):
     nlag_x = int(np.ceil(max_lag_km / float(np.nanmin(dx_km))))
     nlag_y = int(np.ceil(max_lag_km / dy_km))
 
-    frac_x = _efold_lag(_lag_corr_curve(an, nlag_x, axis=2), thresh)
-    frac_y = _efold_lag(_lag_corr_curve(an, nlag_y, axis=1), thresh)
-    Lx = frac_x * dx_km[:, None]
-    Ly = frac_y * dy_km
+    cx = _lag_corr_curve(an, nlag_x, axis=2)
+    cy = _lag_corr_curve(an, nlag_y, axis=1)
+    return dict(cx=cx, cy=cy,
+                sep_x_deg=np.arange(nlag_x + 1) * dlon,
+                sep_y_deg=np.arange(nlag_y + 1) * dlat,
+                dx_km=dx_km, dy_km=dy_km, valid=valid)
+
+
+def decorr_scale_from_curves(cur, thresh=1.0 / np.e):
+    """
+    Isotropic decorrelation length (km) from precomputed autocorr_curves output.
+
+    The zonal (Lx) and meridional (Ly) separations at which each point's curve first
+    falls to `thresh` (default 1/e) are found by interpolation; the isotropic scale
+    is the geometric mean sqrt(Lx * Ly). Returns (L, Lx, Ly) as (y, x) km arrays.
+    """
+    frac_x = _efold_lag(cur['cx'], thresh)
+    frac_y = _efold_lag(cur['cy'], thresh)
+    Lx = frac_x * cur['dx_km'][:, None]
+    Ly = frac_y * cur['dy_km']
     L = np.sqrt(Lx * Ly)
     for a in (Lx, Ly, L):
-        a[~valid] = np.nan
+        a[~cur['valid']] = np.nan
     return L, Lx, Ly
+
+
+def fixed_lag_corr(cur, sep_deg):
+    """
+    Isotropic autocorrelation at a fixed separation (degrees), from autocorr_curves.
+
+    Averages the zonal and meridional correlation at the lag nearest `sep_deg`,
+    giving a dimensionless (y, x) map in [-1, 1] (NaN where undefined). The actual
+    separations used are returned so the caller can label the figure exactly.
+    """
+    dlon = cur['sep_x_deg'][1]
+    dlat = cur['sep_y_deg'][1]
+    kx = int(round(sep_deg / dlon))
+    ky = int(round(sep_deg / dlat))
+    r = 0.5 * (cur['cx'][kx] + cur['cy'][ky])
+    r = np.where(cur['valid'], r, np.nan).astype(np.float32)
+    return r, cur['sep_x_deg'][kx], cur['sep_y_deg'][ky]
+
+
+def band_autocorr(cur, lat, bands):
+    """
+    Latitude-band-averaged zonal & meridional autocorrelation curves.
+
+    For each (label, lo, hi) band the correlation curves are averaged over all points
+    with lo <= |lat| < hi. Returns {label: dict(sep_z, r_z, sep_m, r_m)} with
+    separations in degrees and dimensionless correlations.
+    """
+    alat = np.abs(np.asarray(lat, float))
+    out = {}
+    for label, lo, hi in bands:
+        rows = (alat >= lo) & (alat < hi)
+        if not rows.any():
+            continue
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', RuntimeWarning)
+            r_z = np.nanmean(cur['cx'][:, rows, :], axis=(1, 2))
+            r_m = np.nanmean(cur['cy'][:, rows, :], axis=(1, 2))
+        out[label] = dict(sep_z=cur['sep_x_deg'], r_z=r_z,
+                          sep_m=cur['sep_y_deg'], r_m=r_m)
+    return out
+
+
+def decorrelation_scale(field, lon, lat, max_lag_km=600.0, thresh=1.0 / np.e):
+    """
+    Isotropic spatial decorrelation length (km) at each grid point of a field.
+
+    Thin wrapper over autocorr_curves + decorr_scale_from_curves; see those for the
+    method. Returns (L, Lx, Ly) as (y, x) float32 km arrays (NaN where undefined).
+    """
+    cur = autocorr_curves(field, lon, lat, max_lag_km=max_lag_km)
+    return decorr_scale_from_curves(cur, thresh=thresh)
