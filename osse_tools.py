@@ -16,6 +16,7 @@ Distribution workflow (observed = glider points, true = model field in the hull)
 """
 
 import json
+import warnings
 import numpy as np
 import xarray as xr
 import gsw
@@ -732,3 +733,173 @@ def dist_stats(obs, true):
     }
 
 
+
+
+# ---------------------------------------------------------------------------
+# Domain-map diagnostics: depth-mean time series, spatial decorrelation, and
+# horizontal gradients of the mean velocity field. Used by run_domain_maps.py
+# to build the domain/ maps (mirrors the mean-velocity figures in demo_domain).
+# ---------------------------------------------------------------------------
+
+_KM_PER_DEG = 111.195  # mean km per degree of latitude
+
+
+def depth_mean_series(ds, var, max_depths):
+    """
+    Depth-average one MITgcm velocity diagnostic over 0..max_depth, keeping time.
+
+    Reads the 0-250 m water column once and returns the depth-mean *time series*
+    (time, y, x) for each requested cutoff, so several depth means share a single
+    read of the data. WVEL uses the Zl interface coordinate, U/V the Z centres.
+
+    Parameters
+    ----------
+    ds : xr.Dataset  (from load_model)
+    var : str        one of 'UVEL', 'VVEL', 'WVEL'
+    max_depths : iterable of float   depth cutoffs in metres, e.g. (70, 120, 250)
+
+    Returns
+    -------
+    dict {max_depth: xr.DataArray(time, y, x), float32} on the variable's own grid
+    """
+    zc = _ZCOORD.get(var, 'Z')
+    da = ds[var]
+    zmax = max(max_depths)
+    # trim to the shallowest levels covering zmax so we never read the deep ocean
+    kkeep = int((da[zc].values >= -zmax - 1e-6).sum())
+    da = da.isel({zc: slice(0, kkeep)})
+    means = {d: da.where(da[zc] >= -d).mean(zc) for d in max_depths}
+    import dask
+    computed = dask.compute(*means.values())  # one pass over the trimmed column
+    return {d: c.astype('float32') for d, c in zip(means.keys(), computed)}
+
+
+def _grid_spacing_deg(coord):
+    """Mean absolute spacing (deg) of a 1-D coordinate."""
+    return float(np.mean(np.abs(np.diff(np.asarray(coord, float)))))
+
+
+def gradient_components(field, lon, lat):
+    """
+    Horizontal derivatives d/dx, d/dy (per metre) of a field on a lon/lat grid.
+
+    Accepts a 2-D (y, x) field or a 3-D (time, y, x) stack; the last two axes are
+    latitude then longitude. Uses second-order centred differences, converting the
+    degree spacing to metres with the local cos(lat) factor for the zonal term.
+
+    Returns
+    -------
+    (fx, fy) : same shape as `field`
+    """
+    field = np.asarray(field, float)
+    yax, xax = field.ndim - 2, field.ndim - 1
+    dlon = _grid_spacing_deg(lon)
+    dlat = _grid_spacing_deg(lat)
+    m_per_deg = _KM_PER_DEG * 1000.0
+    cos = np.cos(np.radians(np.asarray(lat, float)))
+    cos = cos.reshape([1] * yax + [-1, 1])  # broadcast over any leading axes and x
+    fy = np.gradient(field, axis=yax) / (dlat * m_per_deg)
+    fx = np.gradient(field, axis=xax) / (dlon * m_per_deg * cos)
+    return fx, fy
+
+
+def gradient_magnitude(field, lon, lat):
+    """Magnitude sqrt((d/dx)^2 + (d/dy)^2) (per metre) of a field; see gradient_components."""
+    fx, fy = gradient_components(field, lon, lat)
+    return np.hypot(fx, fy)
+
+
+def _lag_corr_curve(an, nlag, axis):
+    """
+    Lag-correlation curve of a normalised anomaly field along one spatial axis.
+
+    `an` is (time, y, x) with zero time-mean and unit time-std at every point, so
+    the time average of an_i * an_j is the Pearson correlation between points i and
+    j. For each separation d = 0..nlag the forward (i, i+d) and backward (i, i-d)
+    correlations are averaged, giving c[d] on the full grid (NaN where a point has
+    no in-domain neighbour at that lag). `axis` is 1 (meridional) or 2 (zonal).
+    """
+    T = an.shape[0]
+    shp = an.shape[1:]
+    Np = an.shape[axis]
+    c = np.full((nlag + 1,) + shp, np.nan, np.float32)
+    c[0] = 1.0
+    for d in range(1, nlag + 1):
+        s1 = [slice(None)] * 3; s2 = [slice(None)] * 3
+        s1[axis] = slice(0, Np - d); s2[axis] = slice(d, Np)
+        r = (an[tuple(s1)] * an[tuple(s2)]).sum(0) / T          # (grid minus d along axis)
+        fwd = np.full(shp, np.nan, np.float32)
+        bwd = np.full(shp, np.nan, np.float32)
+        fs = [slice(None)] * 2; bs = [slice(None)] * 2
+        fs[axis - 1] = slice(0, Np - d); bs[axis - 1] = slice(d, Np)
+        fwd[tuple(fs)] = r; bwd[tuple(bs)] = r
+        with warnings.catch_warnings():           # edge points have no neighbour
+            warnings.simplefilter('ignore', RuntimeWarning)
+            c[d] = np.nanmean(np.stack([fwd, bwd]), 0)
+    return c
+
+
+def _efold_lag(c, thresh):
+    """
+    Fractional lag at which a lag-correlation curve c[0..nlag] first drops to thresh.
+
+    Linear interpolation between the last lag >= thresh and the first below it. If
+    the curve never crosses within the window it is capped at the maximum lag; NaN
+    where the curve is undefined (edges) at the crossing.
+    """
+    nlagp1 = c.shape[0]
+    below = c < thresh
+    below[0] = False
+    ever = below.any(0)
+    first = np.argmax(below, 0)                    # first True lag; 0 if never
+    k = np.clip(np.where(ever, first, nlagp1 - 1), 1, nlagp1 - 1)
+    c1 = np.take_along_axis(c, k[None] - 1, 0)[0]  # >= thresh (or capped)
+    c2 = np.take_along_axis(c, k[None], 0)[0]      # <  thresh (or capped)
+    denom = c1 - c2
+    with np.errstate(divide='ignore', invalid='ignore'):
+        step = np.where(denom > 0, (c1 - thresh) / denom, 0.0)
+    frac = (k - 1) + step
+    frac = np.where(ever, frac, nlagp1 - 1).astype(np.float32)
+    frac[~(np.isfinite(c1) & np.isfinite(c2))] = np.nan
+    return frac
+
+
+def decorrelation_scale(field, lon, lat, max_lag_km=600.0, thresh=1.0 / np.e):
+    """
+    Isotropic spatial decorrelation length (km) at each grid point of a field.
+
+    From the temporal anomalies of a (time, y, x) field: at every point the anomaly
+    time series is correlated against its neighbours along x and along y, and the
+    zonal (Lx) and meridional (Ly) separations at which the lag-correlation first
+    falls to `thresh` (default 1/e) are found by interpolation. The isotropic scale
+    returned is the geometric mean sqrt(Lx * Ly). Scales that exceed `max_lag_km`
+    are capped at that window.
+
+    Returns
+    -------
+    (L, Lx, Ly) : each a (y, x) float32 array in km (NaN where undefined)
+    """
+    f = np.asarray(field, np.float32)
+    _, Ny, Nx = f.shape
+    mean = f.mean(0)
+    std = f.std(0)
+    std = np.where(std == 0, np.nan, std)
+    an = (f - mean) / std
+    valid = np.isfinite(an[0])
+    an = np.nan_to_num(an, copy=False)
+
+    dlon = _grid_spacing_deg(lon)
+    dlat = _grid_spacing_deg(lat)
+    dx_km = dlon * _KM_PER_DEG * np.cos(np.radians(np.asarray(lat, float)))  # (Ny,)
+    dy_km = dlat * _KM_PER_DEG
+    nlag_x = int(np.ceil(max_lag_km / float(np.nanmin(dx_km))))
+    nlag_y = int(np.ceil(max_lag_km / dy_km))
+
+    frac_x = _efold_lag(_lag_corr_curve(an, nlag_x, axis=2), thresh)
+    frac_y = _efold_lag(_lag_corr_curve(an, nlag_y, axis=1), thresh)
+    Lx = frac_x * dx_km[:, None]
+    Ly = frac_y * dy_km
+    L = np.sqrt(Lx * Ly)
+    for a in (Lx, Ly, L):
+        a[~valid] = np.nan
+    return L, Lx, Ly

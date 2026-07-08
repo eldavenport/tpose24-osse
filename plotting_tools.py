@@ -405,3 +405,48 @@ def render_velocity_maps(here, efig, run_dir, iters, spinup_end="2012-10-11", ma
         plt.close(fig)
     return len(pending)
 
+
+
+def plot_domain_grid(panels, cbar_label, cmap, suptitle, fname,
+                     diverging=False, ncols=3, pct=(2, 98)):
+    """
+    Grid of pcolormesh domain maps, styled like the demo_domain mean-velocity figs.
+
+    Parameters
+    ----------
+    panels : list of (values2d, x, y, title)
+        Each panel's 2-D field with its lon (x) and lat (y) coordinates.
+    cbar_label, cmap, suptitle, fname : str / colormap
+    diverging : bool
+        If True, symmetric limits +/- the `pct[1]`-th percentile of |values| with a
+        zero-centred cmap; otherwise sequential limits at the `pct` percentiles.
+    ncols : int
+        Panels per row (extra axes are hidden).
+    """
+    n = len(panels)
+    nrows = int(np.ceil(n / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(6.7 * ncols, 4.8 * nrows),
+                             squeeze=False)
+    axf = axes.ravel()
+    for ax, (vals, xx, yy, title) in zip(axf, panels):
+        vals = np.asarray(vals)
+        if diverging:
+            vmax = float(np.nanpercentile(np.abs(vals), pct[1]))
+            kw = dict(cmap=cmap, vmin=-vmax, vmax=vmax)
+        else:
+            kw = dict(cmap=cmap,
+                      vmin=float(np.nanpercentile(vals, pct[0])),
+                      vmax=float(np.nanpercentile(vals, pct[1])))
+        im = ax.pcolormesh(xx, yy, vals, shading='auto', **kw)
+        plt.colorbar(im, ax=ax, shrink=0.8, pad=0.02, label=cbar_label)
+        ax.axhline(0, color='k', lw=0.5, ls=':')
+        ax.set_xlabel('Longitude (°E)')
+        ax.set_ylabel('Latitude (°N)')
+        ax.set_title(title)
+    for ax in axf[n:]:
+        ax.axis('off')
+    fig.suptitle(suptitle, fontsize=13)
+    fig.tight_layout()
+    fig.savefig(fname, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    return fname
