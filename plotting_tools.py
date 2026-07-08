@@ -6,6 +6,7 @@ make_experiment_figs notebooks.
 """
 
 import os
+import re
 import json
 import glob
 import numpy as np
@@ -473,6 +474,7 @@ def plot_domain_grid(panels, cbar_label, cmap, suptitle, fname,
     else:
         panel_lims = None  # per-panel, computed below
 
+    cbars = []
     for i, (ax, (vals, xx, yy, title)) in enumerate(zip(axf, panels)):
         vals = np.asarray(vals)
         if panel_lims is not None:
@@ -488,16 +490,28 @@ def plot_domain_grid(panels, cbar_label, cmap, suptitle, fname,
         # boundaries) so evenly-spaced tick values plot at evenly-spaced positions —
         # a contourf colorbar snaps ticks to level edges and looks irregular.
         sm = mcm.ScalarMappable(norm=Normalize(vmin, vmax), cmap=cmap)
-        cbar = plt.colorbar(sm, ax=ax, shrink=0.8, pad=0.02, label=cbar_label,
+        cbar = plt.colorbar(sm, ax=ax, shrink=0.8, pad=0.03, label=cbar_label,
                             extend='both',
                             ticks=mticker.MaxNLocator(nbins=6, symmetric=diverging))
         cbar.ax.tick_params(labelsize=9)
+        cbars.append(cbar)
         ax.axhline(0, color='k', lw=0.5, ls=':')
         ax.set_xlabel('Longitude (°E)')
         ax.set_ylabel('Latitude (°N)')
         ax.set_title(title)
     for ax in axf[n:]:
         ax.axis('off')
+    # Fold each colorbar's scientific-notation scale (e.g. "1e-6") into its label so
+    # the floating offset text at the top of the bar can't overlap the map above it.
+    fig.canvas.draw()
+    for cbar in cbars:
+        off = cbar.ax.yaxis.get_major_formatter().get_offset()
+        if off:
+            cbar.ax.yaxis.get_offset_text().set_visible(False)
+            off = off.replace('−', '-')          # matplotlib uses a unicode minus
+            m = re.fullmatch(r'1e([+-]?\d+)', off.strip())
+            scale = rf'$\times 10^{{{int(m.group(1))}}}$' if m else f'×{off}'
+            cbar.set_label(f'{cbar_label}  ({scale})')
     # reserve a constant absolute headroom for the suptitle regardless of nrows
     h = 4.8 * nrows
     fig.tight_layout(rect=[0, 0, 1, 1 - 0.45 / h])

@@ -1,8 +1,9 @@
 """
-Domain maps of current statistics: time/depth-mean velocity, spatial decorrelation
+Domain maps of velocity statistics: time/depth-mean velocity, spatial decorrelation
 scales of the currents, dimensionless autocorrelation vs array span, horizontal
-gradients of the mean currents, and decorrelation scales of those gradients. Saves a
-full-domain + equatorial-crop pair for every map into domain/.
+gradients of the mean currents, and decorrelation scales of those gradients. Figures
+are saved under domain/{full_domain,crop_140}/{velocities,gradients}/ — full-domain
+vs equatorial-crop views, split into velocity/current diagnostics vs gradient ones.
 
 Split into two phases so figure styling can be re-tuned without re-reading the model:
   * COMPUTE — reads the model, builds the depth-mean time series, and derives every
@@ -90,10 +91,18 @@ def _panels(das, titles):
     return full, crop
 
 
-def _save_pair(base, panels_full, panels_crop, **kw):
-    """Save the full-domain and crop_ figure for one diagnostic."""
-    plot_domain_grid(panels_full, fname=os.path.join(OUTDIR, f'{base}.png'), **kw)
-    plot_domain_grid(panels_crop, fname=os.path.join(OUTDIR, f'crop_{base}.png'), **kw)
+def _save_pair(base, panels_full, panels_crop, subdir, **kw):
+    """
+    Save the full-domain and crop_ figure for one diagnostic into the folder tree
+    domain/{full_domain,crop_140}/{subdir}/, where subdir is 'velocities' or
+    'gradients'.
+    """
+    full_dir = os.path.join(OUTDIR, 'full_domain', subdir)
+    crop_dir = os.path.join(OUTDIR, 'crop_140', subdir)
+    os.makedirs(full_dir, exist_ok=True)
+    os.makedirs(crop_dir, exist_ok=True)
+    plot_domain_grid(panels_full, fname=os.path.join(full_dir, f'{base}.png'), **kw)
+    plot_domain_grid(panels_crop, fname=os.path.join(crop_dir, f'crop_{base}.png'), **kw)
 
 
 def _cache_path(d, pkey):
@@ -158,29 +167,31 @@ def plot_config(cache, d, suf, plabel):
     # Each component on its OWN scale: V is much weaker than U, so a shared scale
     # would wash V out. (Derivatives below DO share — see GROUP_*.)
     full, crop = _panels([means[v] for v in VARS], [LABEL[v] for v in VARS])
-    _save_pair(f'domain_mean_velocity_{d}m{suf}', full, crop,
+    _save_pair(f'domain_mean_velocity_{d}m{suf}', full, crop, 'velocities',
                cbar_label='m s$^{-1}$', cmap=cmo.balance, diverging=True,
                suptitle=f'{head} — time/depth-mean velocity')
 
     # --- 1a. current decorrelation scale (km) -----------------------------
     full, crop = _panels(cache['Ld'], [f'{LABEL[v]} decorrelation' for v in VARS])
-    _save_pair(f'domain_current_decorr_{d}m{suf}', full, crop,
+    _save_pair(f'domain_current_decorr_{d}m{suf}', full, crop, 'velocities',
                cbar_label='length scale (km)', cmap=cmo.thermal, groups=GROUP_UVW,
                suptitle=f'{head} — current decorrelation scale (1/e)')
 
     # --- 1b. dimensionless autocorrelation vs array span ------------------
     full, crop = _panels(cache['Rd'], cache['rtitles'])
-    _save_pair(f'domain_current_corr_by_span_{d}m{suf}', full, crop,
+    _save_pair(f'domain_current_corr_by_span_{d}m{suf}', full, crop, 'velocities',
                cbar_label='autocorrelation', cmap=cmo.balance, vlim=(-1, 1),
                ncols=len(VARS),
                suptitle=(f'{head} — current autocorrelation vs array span '
                          f'(rows: {", ".join(f"{s:g}°" for s in SEP_DEGS)})'))
 
     # --- 1c. band-averaged autocorrelation vs separation ------------------
+    vel_dir = os.path.join(OUTDIR, 'full_domain', 'velocities')
+    os.makedirs(vel_dir, exist_ok=True)
     plot_autocorr_curves(
         cache['curves_fig'],
         suptitle=f'{head} — current autocorrelation vs separation',
-        fname=os.path.join(OUTDIR, f'domain_current_autocorr_curves_{d}m{suf}.png'),
+        fname=os.path.join(vel_dir, f'domain_current_autocorr_curves_{d}m{suf}.png'),
         thresh=1.0 / np.e, span_deg=ARRAY_SPAN_DEG, ref_levels=(0.7,))
 
     # --- 2. gradient magnitude of the mean currents (recompute from means) -
@@ -191,7 +202,7 @@ def plot_config(cache, d, suf, plabel):
         Gmag.append(_as_da(ot.gradient_magnitude(m.values, m[xdim].values,
                                                  m[ydim].values), m))
     full, crop = _panels(Gmag, [f'|∇{LABEL[v]}|' for v in VARS])
-    _save_pair(f'domain_gradient_mag_{d}m{suf}', full, crop,
+    _save_pair(f'domain_gradient_mag_{d}m{suf}', full, crop, 'gradients',
                cbar_label='s$^{-1}$', cmap=cmo.amp, groups=GROUP_UVW,
                suptitle=f'{head} — mean-current gradient magnitude')
 
@@ -209,14 +220,14 @@ def plot_config(cache, d, suf, plabel):
             Shear += [dax, day]
             stitles += [f'∂{LABEL[v]}/∂x', f'∂{LABEL[v]}/∂y']
     full, crop = _panels(Shear, stitles)
-    _save_pair(f'domain_gradient_shear_{d}m{suf}', full, crop,
+    _save_pair(f'domain_gradient_shear_{d}m{suf}', full, crop, 'gradients',
                cbar_label='s$^{-1}$', cmap=cmo.balance, diverging=True, ncols=2,
                groups=GROUP_SHEAR,
                suptitle=f'{head} — mean-current shear components')
 
     # --- 4. spatial decorrelation of the gradient fields ------------------
     full, crop = _panels(cache['Lg'], [f'|∇{LABEL[v]}| decorrelation' for v in VARS])
-    _save_pair(f'domain_gradient_decorr_{d}m{suf}', full, crop,
+    _save_pair(f'domain_gradient_decorr_{d}m{suf}', full, crop, 'gradients',
                cbar_label='length scale (km)', cmap=cmo.thermal, groups=GROUP_UVW,
                suptitle=f'{head} — gradient decorrelation scale (1/e)')
 
