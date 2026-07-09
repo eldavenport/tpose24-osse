@@ -27,6 +27,11 @@ Families written:
                   - symmetric 3-cell array centred at -1/0/+1
   C  density    fixed centre (0.5N), gliders-per-cell swept 2/4/6 at each width
 
+Note: `_equator_hex_cell` is regular only when off = sqrt(3)/2 * half_height, which no
+swept width hits — so every equator_hex* config is a stretched (2-fold) hexagon. A
+one-off test of the two regular hexagons found no material W-skill difference once
+footprint size is matched, so they are deliberately NOT part of this config grid.
+
 Run:  python generate_configs.py   ->   experiment_1/configs/**/*.json
 """
 import json

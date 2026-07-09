@@ -67,7 +67,7 @@ def _lat_lbl(v):
 
 
 # ---- shared metric axis limits ---------------------------------------------
-# Fixed so every summary figure (all experiments + comparisons) shares the same
+# Every summary figure (all experiments + comparisons) shares the same
 # axes and can be compared by eye. Curves are allowed to run off the plot for
 # the rare outlier -- read exact values off the fig6 heatmaps instead. Chosen to
 # comfortably hold the bulk of the data across every experiment (width-swept and
@@ -1375,3 +1375,86 @@ def make_fig8_compare(M, outdir, load_cell):
         _render(keys,
                 lambda w, pat: _rows_for((lambda p: lambda mm: mm.pattern == p)(pat), "pattern", pat, w),
                 "8d_equator_single", "equator single cell — shape & height")
+
+
+# ---- reg_hex: regular vs nearest-irregular hexagon (one-off test) ----
+# `_equator_hex_cell` is regular only when off = sqrt(3)/2 * half_height, which no swept
+# WIDTH hits -- so every equator_hex* config is a stretched, 2-fold hexagon. A regular
+# hexagon's plane-fit aliasing is orientation-independent.
+REGHEX_PAIRS = [                       # (reg_config, sweep_pattern, height, nearest_irreg_width)
+    ("reg_hex1deg", "equator_hex1deg", 1.0, 0.5),
+    ("reg_hex2deg", "equator_hex2deg", 2.0, 1.0),
+]
+
+
+def _reghex_get(m, cfg):
+    d = m[m.config == cfg]
+    if d.empty:
+        raise ValueError(f"metrics.csv missing config {cfg!r} — rerun run_experiment*.py "
+                         "— this is a one-off; the reg_hex configs are no longer generated.")
+    return d
+
+
+def _reghex_panels(ax, m, sweep_ls="-", reg_filled=True, sweep_alpha=0.45):
+    """Draw, for each height: the irregular width sweep (faint line) + the regular
+    hexagon (marker at its own width) + the nearest irregular width (open marker).
+
+    The sweep is essential context: the regular hexagon is SMALLER than its nearest
+    irregular neighbour (off = sqrt(3)/2 * half), and skill varies strongly with
+    width, so comparing the two configs alone confounds regularity with size.
+    """
+    c = EQS_SHAPE_COLOR["hexagon"]
+    for reg_cfg, pat, h, near_w in REGHEX_PAIRS:
+        lw = EQS_HEIGHT_LW[h]
+        ms = EQS_HEIGHT_MS[h]
+        sw = m[m.pattern == pat].sort_values("width")
+        reg = _reghex_get(m, reg_cfg)
+        near = sw[np.isclose(sw.width, near_w)]
+
+        skw = dict(color=c, lw=lw, ls=sweep_ls, alpha=sweep_alpha)
+        rkw = dict(color=c, ls="", marker="*", ms=ms + 7, mew=1.6,
+                   mfc=c if reg_filled else "none")
+        nkw = dict(color=c, ls="", marker="o", ms=ms, mew=1.6, mfc="none")
+
+        # truth is the dotted sweep line; the regular hexagon's own truth lies on it,
+        # so a separate marker for it would only clutter the panel
+        ax.flat[0].plot(sw.width, sw.w_model_mean * W2DAY, color=c, lw=lw, ls=":",
+                        alpha=sweep_alpha * 0.8)
+        ax.flat[0].plot(sw.width, sw.w_est_mean * W2DAY, **skw)
+        ax.flat[0].plot(reg.width, reg.w_est_mean * W2DAY, **rkw)
+        ax.flat[0].plot(near.width, near.w_est_mean * W2DAY, **nkw)
+        for k in range(1, 6):
+            ax.flat[k].plot(sw.width, METRIC6[k][0](sw), **skw)
+            ax.flat[k].plot(reg.width, METRIC6[k][0](reg), **rkw)
+            ax.flat[k].plot(near.width, METRIC6[k][0](near), **nkw)
+
+
+def make_fig_reghex(m, sumdir):
+    """
+    Six-panel skill comparison (figure-2 metric order) of the two REGULAR equator
+    hexagons (stars) against their nearest irregular neighbours (open circles),
+    over the faint irregular width sweep that supplies the size context.
+    """
+    c = EQS_SHAPE_COLOR["hexagon"]
+    fig, ax = plt.subplots(2, 3, figsize=(15.5, 8.6))
+    _reghex_panels(ax, m)
+    label6(ax, "glider lon offset (deg)")
+    ax.flat[0].legend(handles=ESTTRUE, loc="best", frameon=True)
+    handles = [
+        Line2D([0], [0], color=c, ls="", marker="*", ms=12, mfc=c, label="regular hexagon"),
+        Line2D([0], [0], color=c, ls="", marker="o", ms=7, mfc="none",
+               label="nearest irregular"),
+        Line2D([0], [0], color=c, lw=EQS_HEIGHT_LW[1.0], alpha=0.45,
+               label="1° irregular sweep"),
+        Line2D([0], [0], color=c, lw=EQS_HEIGHT_LW[2.0], alpha=0.45,
+               label="2° irregular sweep"),
+    ]
+    fig.legend(handles=handles, loc="upper center", ncol=4, frameon=False,
+               bbox_to_anchor=(0.5, 1.0))
+    fig.tight_layout(rect=[0, 0, 1, 0.94])
+    out = os.path.join(sumdir, "fig_reghex_regular_vs_irregular.png")
+    fig.savefig(out, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out
+
+
