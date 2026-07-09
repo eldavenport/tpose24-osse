@@ -971,6 +971,80 @@ def decorrelation_scale(field, lon, lat, max_lag_km=600.0, thresh=1.0 / np.e):
     return decorr_scale_from_curves(cur, thresh=thresh)
 
 
+def point_autocorr(field, lon, lat, anchor_lon, anchor_lat, max_lag_km=600.0):
+    """
+    Zonal and meridional spatial autocorrelation function anchored at ONE point.
+
+    Same temporal-anomaly Pearson correlation as autocorr_curves (anomalies
+    normalized to unit time-variance, forward/backward lags averaged), but evaluated
+    only for the nearest grid point to (anchor_lat, anchor_lon) -- the correlation of
+    that point's time series with its neighbours along the row (zonal) and column
+    (meridional). No decorrelation cutoff is applied; this is the raw curve.
+
+    field : (time, y, x).  Returns dict(sep_x_deg, r_x, sep_y_deg, r_y, lon0, lat0).
+    """
+    f = np.asarray(field, np.float32)
+    lon = np.asarray(lon, float); lat = np.asarray(lat, float)
+    ix = int(np.argmin(np.abs(lon - anchor_lon)))
+    iy = int(np.argmin(np.abs(lat - anchor_lat)))
+
+    std = np.where(f.std(0) == 0, np.nan, f.std(0))
+    an = np.nan_to_num((f - f.mean(0)) / std)      # unit-variance anomalies
+    T = f.shape[0]
+    a0 = an[:, iy, ix]                              # anchor series (unit variance)
+
+    dlon = _grid_spacing_deg(lon); dlat = _grid_spacing_deg(lat)
+    dx_km = dlon * _KM_PER_DEG * np.cos(np.radians(lat[iy]))
+    dy_km = dlat * _KM_PER_DEG
+    nlag_x = int(np.ceil(max_lag_km / dx_km))
+    nlag_y = int(np.ceil(max_lag_km / dy_km))
+
+    def _curve(strip, i0, nlag):                   # strip: (time, n) along the axis
+        n = strip.shape[1]
+        r = np.full(nlag + 1, np.nan, np.float32)
+        for k in range(nlag + 1):
+            vals = []
+            if i0 + k < n:
+                vals.append(float((a0 * strip[:, i0 + k]).sum() / T))
+            if i0 - k >= 0:
+                vals.append(float((a0 * strip[:, i0 - k]).sum() / T))
+            if vals:
+                r[k] = np.mean(vals)
+        return r
+
+    r_x = _curve(an[:, iy, :], ix, nlag_x)         # along the anchor's latitude row
+    r_y = _curve(an[:, :, ix], iy, nlag_y)         # along the anchor's longitude column
+    return dict(sep_x_deg=np.arange(nlag_x + 1) * dlon, r_x=r_x,
+                sep_y_deg=np.arange(nlag_y + 1) * dlat, r_y=r_y,
+                lon0=float(lon[ix]), lat0=float(lat[iy]))
+
+
+def point_corr_map(field, lon, lat, anchor_lon, anchor_lat):
+    """
+    Two-dimensional spatial autocorrelation anchored at ONE point: the Pearson
+    correlation of that point's temporal anomaly with every other grid point.
+
+    The 2-D generalization of point_autocorr -- instead of slicing along the anchor's
+    row and column it maps r(dlon, dlat), so the anisotropy AND the orientation/tilt
+    of the coherent structure are visible. r = 1 at the anchor by construction.
+
+    field : (time, y, x).  Returns (r2d (y, x) float32, lon0, lat0).
+    """
+    f = np.asarray(field, np.float32)
+    lon = np.asarray(lon, float); lat = np.asarray(lat, float)
+    ix = int(np.argmin(np.abs(lon - anchor_lon)))
+    iy = int(np.argmin(np.abs(lat - anchor_lat)))
+
+    sd = f.std(0)
+    valid = np.isfinite(sd) & (sd != 0)
+    an = np.nan_to_num((f - f.mean(0)) / np.where(valid, sd, np.nan))
+    T = f.shape[0]
+    # both series carry unit time-variance, so the time-mean product IS Pearson r
+    r = np.tensordot(an[:, iy, ix], an, axes=(0, 0)) / T
+    r = np.where(valid, r, np.nan).astype(np.float32)
+    return r, float(lon[ix]), float(lat[iy])
+
+
 # ---------------------------------------------------------------------------
 # Footprint plane-fit error maps  (array-design diagnostic)
 # ---------------------------------------------------------------------------
@@ -996,7 +1070,10 @@ def footprint_offsets(shape, width_deg, height_deg):
     Glider (lat, lon) offsets (deg, relative to the array centre) for a footprint
     inscribed in a width_deg (zonal) x height_deg (meridional) box.
 
-    hexagon : 6 gliders -- E/W vertices on the equator, 4 off-axis (pointy E-W).
+    hexagon : 6 gliders -- N/S vertices on the centre meridian, 4 side gliders at
+              +/-width/2 lon and +/-height/4 lat (pointy N-S). Matches
+              experiment_1/generate_configs.py:_equator_hex_cell, where the N/S
+              vertices land on the mooring line. Regular iff width = 0.866*height.
     square  : 6 gliders -- 4 box corners + the 2 E/W edge midpoints (matches the
               existing rectangle configs).
     square4 : 4 gliders -- the 4 box corners only (fair 4-glider peer of diamond).
@@ -1004,8 +1081,8 @@ def footprint_offsets(shape, width_deg, height_deg):
     """
     w, h = width_deg / 2.0, height_deg / 2.0
     if shape == 'hexagon':
-        return [(0.0, w), (h, w / 2), (h, -w / 2),
-                (0.0, -w), (-h, -w / 2), (-h, w / 2)]
+        return [(h, 0.0), (h / 2, w), (-h / 2, w),
+                (-h, 0.0), (-h / 2, -w), (h / 2, -w)]
     if shape == 'square':
         return [(h, w), (h, -w), (-h, -w), (-h, w), (0.0, w), (0.0, -w)]
     if shape == 'square4':
@@ -1020,8 +1097,8 @@ def footprint_outline(shape, width_deg, height_deg):
     convex-hull area (truth averaging) and the filled-fit region (Tier 1)."""
     w, h = width_deg / 2.0, height_deg / 2.0
     if shape == 'hexagon':
-        return [(0.0, w), (h, w / 2), (h, -w / 2),
-                (0.0, -w), (-h, -w / 2), (-h, w / 2)]
+        return [(h, 0.0), (h / 2, w), (-h / 2, w),
+                (-h, 0.0), (-h / 2, -w), (h / 2, -w)]
     if shape in ('square', 'square4'):
         return [(h, w), (h, -w), (-h, -w), (-h, w)]
     if shape == 'diamond':

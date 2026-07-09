@@ -640,3 +640,44 @@ def plot_footprint_profiles(profiles, coord, rows, widths, shapes, colors,
         fig.savefig(fname, dpi=150, bbox_inches='tight')
         plt.close(fig)
     return fname
+
+
+def plot_point_autocorr(per_var, suptitle, fname, xmax_deg=None):
+    """
+    Raw spatial autocorrelation function anchored at a single grid point, one panel
+    per variable: zonal (solid) and meridional (dashed) correlation vs separation.
+
+    Deliberately shows NO chosen cutoff scale -- no 1/e line, no reference levels, no
+    array-span shading (contrast plot_autocorr_curves). Just the curves, with r=0
+    marked so the negative lobe (dominant eddy/wave wavelength) is readable.
+
+    per_var : list of (var_title, dict) from osse_tools.point_autocorr
+              (sep_x_deg, r_x, sep_y_deg, r_y).
+    """
+    from matplotlib.lines import Line2D
+    n = len(per_var)
+    # shared, data-driven lower limit so a deep negative lobe is never clipped
+    ymin = min(float(np.nanmin(np.concatenate([p['r_x'], p['r_y']])))
+               for _, p in per_var)
+    ylo = max(-1.02, min(-0.3, ymin - 0.08))
+    fig, axes = plt.subplots(1, n, figsize=(5.2 * n, 4.2), squeeze=False, sharey=True)
+    for ax, (title, pac) in zip(axes.ravel(), per_var):
+        ax.plot(pac['sep_x_deg'], pac['r_x'], '-', color='#1b6ca8', lw=1.9)
+        ax.plot(pac['sep_y_deg'], pac['r_y'], '--', color='#c0392b', lw=1.9)
+        ax.axhline(0, color='k', lw=0.7)
+        xm = xmax_deg or max(pac['sep_x_deg'][-1], pac['sep_y_deg'][-1])
+        ax.set_xlim(0, xm)
+        ax.set_ylim(ylo, 1.02)
+        ax.grid(True, lw=0.3, alpha=0.5)
+        ax.set_xlabel('separation (°)')
+        ax.set_ylabel('autocorrelation')
+        ax.set_title(title)
+    handles = [Line2D([0], [0], color='#1b6ca8', lw=1.9, ls='-', label='zonal'),
+               Line2D([0], [0], color='#c0392b', lw=1.9, ls='--', label='meridional')]
+    fig.legend(handles=handles, loc='upper center', ncol=2, frameon=False,
+               bbox_to_anchor=(0.5, 1.0))
+    fig.suptitle(suptitle, fontsize=13, y=1.10)
+    fig.tight_layout(rect=[0, 0, 1, 0.94])
+    fig.savefig(fname, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    return fname
