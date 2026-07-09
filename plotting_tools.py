@@ -514,8 +514,11 @@ def plot_domain_grid(panels, cbar_label, cmap, suptitle, fname,
             cbar.set_label(f'{cbar_label}  ({scale})')
     # reserve a constant absolute headroom for the suptitle regardless of nrows
     h = 4.8 * nrows
-    fig.tight_layout(rect=[0, 0, 1, 1 - 0.45 / h])
-    fig.suptitle(suptitle, fontsize=13, y=1 - 0.10 / h)
+    if suptitle:
+        fig.tight_layout(rect=[0, 0, 1, 1 - 0.45 / h])
+        fig.suptitle(suptitle, fontsize=13, y=1 - 0.10 / h)
+    else:
+        fig.tight_layout()
     fig.savefig(fname, dpi=150, bbox_inches='tight')
     plt.close(fig)
     return fname
@@ -587,4 +590,53 @@ def plot_autocorr_curves(per_var, suptitle, fname, thresh=None, xmax_deg=4.0,
     fig.tight_layout(rect=[0, 0, 1, 0.94])
     fig.savefig(fname, dpi=150, bbox_inches='tight')
     plt.close(fig)
+    return fname
+
+
+def plot_footprint_profiles(profiles, coord, rows, widths, shapes, colors,
+                            xlabel, legend_title, fname, ref_x=None):
+    """
+    Line-profile summary of footprint w-error, faceted by (statistic, height) rows ×
+    width cols, one colored line per shape -- so the lowest line at any point on the
+    axis is the best shape there. The reducing axis is baked into `profiles` (the
+    median/mean |w-error| over the other axis); this just plots vs `coord`.
+
+    profiles : dict (stat, shape, height, width) -> 1-D array aligned to `coord`.
+    coord    : 1-D array for the x-axis (latitude or longitude, deg).
+    rows     : list of (stat, height) -- one plot row each (e.g. median h1, median h2,
+               mean h1, mean h2).
+    shapes   : ordered shape labels (lines).  colors : dict label -> color.
+    ref_x    : optional x for a vertical guide line.
+
+    Follows the repo summary-figure style: figure-level top legend, no suptitle,
+    bold labels, shared y-scale.
+    """
+    nrows, ncols = len(rows), len(widths)
+    ymax = np.nanpercentile(
+        np.concatenate([np.abs(p).ravel() for p in profiles.values()]), 99)
+    with plt.rc_context({'axes.labelsize': 12.5, 'axes.labelweight': 'bold',
+                         'legend.fontsize': 12, 'legend.title_fontsize': 14}):
+        fig, axes = plt.subplots(nrows, ncols, figsize=(4.6 * ncols, 3.1 * nrows),
+                                 squeeze=False, sharex=True, sharey=True)
+        for r, (stat, h) in enumerate(rows):
+            for c, w in enumerate(widths):
+                ax = axes[r][c]
+                for s in shapes:
+                    ax.plot(coord, profiles[(stat, s, h, w)], color=colors[s],
+                            lw=1.8, label=s)
+                if ref_x is not None:
+                    ax.axvline(ref_x, color='k', lw=0.6, ls=':')
+                ax.set_ylim(0, ymax)
+                ax.grid(True, lw=0.3, alpha=0.5)
+                ax.set_title(f'{stat} · {w:g}° × {h:g}°  (W×H)')
+                if r == nrows - 1:
+                    ax.set_xlabel(xlabel)
+                if c == 0:
+                    ax.set_ylabel(f'{stat} |w error| (m day$^{{-1}}$)')
+        handles = [plt.Line2D([], [], color=colors[s], lw=2.4) for s in shapes]
+        fig.legend(handles, list(shapes), title=legend_title, ncol=len(shapes),
+                   loc='upper center', bbox_to_anchor=(0.5, 1.0), frameon=False)
+        fig.tight_layout(rect=[0, 0, 1, 1 - 0.35 / nrows])
+        fig.savefig(fname, dpi=150, bbox_inches='tight')
+        plt.close(fig)
     return fname
