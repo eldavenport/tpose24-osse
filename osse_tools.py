@@ -288,7 +288,7 @@ def compute_w_planefit(uv_samples, remove_barotropic=False, extrapolate_to_surfa
 
     Notes
     -----
-    Positions are projected onto a flat plane via _latlon_to_m (flat-Earth approximation).
+    Positions are projected onto a flat plane via _latlon_to_m.
     w=0 is assumed at at the surface by default, otherwise 0 at z_top if no extrapolation happens.
     """
     if extrapolate_to_surface:
