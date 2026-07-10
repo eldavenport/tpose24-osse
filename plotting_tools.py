@@ -14,6 +14,7 @@ import xarray as xr
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import matplotlib.dates as mdates
+import matplotlib.ticker as mticker
 import cmocean.cm as cmo
 
 import osse_tools as ot
@@ -316,9 +317,13 @@ def plot_velocity_map(ds, positions, max_depth=70, time_range=None, cells=None):
 
     for ax, (data, xx, yy, cmap, title) in zip(axes, panels):
         vmax = float(np.nanpercentile(np.abs(data.values), 98))
-        im = ax.pcolormesh(xx, yy, data.values, cmap=cmap,
-                           vmin=-vmax, vmax=vmax, shading='auto')
-        plt.colorbar(im, ax=ax, shrink=0.85, pad=0.02, label='m s⁻¹')
+        levels = np.linspace(-vmax, vmax, 100)   # 100 filled levels, symmetric about 0
+        im = ax.contourf(xx, yy, data.values, levels=levels, cmap=cmap, extend='both')
+        plt.colorbar(im, ax=ax, shrink=0.85, pad=0.02, label='m s⁻¹',
+                     ticks=mticker.MaxNLocator(nbins=5, symmetric=True))
+        # clean, evenly spaced lon/lat ticks (contourf leaves the raw grid otherwise)
+        ax.xaxis.set_major_locator(mticker.MaxNLocator(nbins=5))
+        ax.yaxis.set_major_locator(mticker.MaxNLocator(nbins=5))
         if cells is None:
             ax.scatter(glider_lons, glider_lats, c='k', s=40, zorder=5, marker='o')
         else:
@@ -382,9 +387,12 @@ def render_w_comparisons(m, here, efig, point_depth=-50):
     return n_new
 
 
-def render_velocity_maps(here, efig, run_dir, iters, spinup_end="2012-10-11", max_depth=70):
+def render_velocity_maps(here, efig, run_dir, iters, spinup_end="2012-10-11", max_depth=70,
+                         delta_t=300):
     """Per-config velocity/vorticity context maps. Opens the model only if at
-    least one config still lacks its velocity_map.png. Returns the number written."""
+    least one config still lacks its velocity_map.png. Returns the number written.
+    `delta_t` is the model timestep (s) used to map iters -> time (60 for the
+    dt60 runs, 300 for the standard runs)."""
     cfg_paths = sorted(glob.glob(os.path.join(here, "configs", "**", "*.json"), recursive=True))
     pending = [p for p in cfg_paths
                if not os.path.exists(
@@ -393,7 +401,7 @@ def render_velocity_maps(here, efig, run_dir, iters, spinup_end="2012-10-11", ma
           f"({len(cfg_paths) - len(pending)} already have one)")
     if not pending:
         return 0
-    ds_model = ot.load_model(run_dir, iters).sel(time=slice(spinup_end, None))
+    ds_model = ot.load_model(run_dir, iters, delta_t=delta_t).sel(time=slice(spinup_end, None))
     for path in pending:
         cfg = json.load(open(path))
         cells = ot.load_cells(path)
