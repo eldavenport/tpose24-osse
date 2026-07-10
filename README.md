@@ -7,11 +7,8 @@ equatorial Pacific, using TPOSE24 model output as truth.
 
 - **`osse_tools.py`** — computational core (sampling, plane-fit w, skill metrics,
   distributions). No plotting.
-- **`plotting_tools.py`** — general diagnostic plotting moved out of `osse_tools`
-  (`plot_w_comparison`, `plot_velocity_map`, `plot_field_pdfs`, …) plus the
-  per-config experiment-figure loops (`render_w_comparisons`, `render_velocity_maps`)
-  shared by the `make_experiment_figs` notebooks. Imports computational helpers
-  from `osse_tools`.
+- **`plotting_tools.py`** — `plot_w_comparison`, `plot_velocity_map`, `plot_field_pdfs`, … plus the
+  per-config experiment experiment figures used in `make_experiment_figs` notebooks. 
 - **`summary_fig_tools.py`** — shared style, helpers, and `make_fig*` builders for
   the W-skill summary figures; used by `experiment_*/summary.ipynb` and
   `compare_exp_1_2` (each notebook just loads `metrics.csv` and calls the builders).
@@ -43,10 +40,9 @@ equatorial Pacific, using TPOSE24 model output as truth.
 
 Functions like `_convex_hull_mask` can be used to find all the points inside any polygon (for the model "truth" averages). 
 
-Array configurations can live in `configs/*.json` as lists of (lat, lon) positions. There are some examples in hex/, rectangle/ etc. 
-  - Based on TEPEX meetings, it sounds like we may make multiple estimates of W centered at different latitudes. the .json files define
-    `positions` which is a union of all points in the array, and `cells` which are individual cells to compute W over. (you could
-    realistically have 2 or 3 cells depending on the configuration).
+Array configurations can live in `experiment_1/configs/` as lists of (lat, lon) positions. There are some examples in hex/, rectangle/ etc. 
+  - the .json files define `positions` which is a union of all points in the array, and `cells` which are
+    individual cells to compute W over. (you could realistically have 2 or 3 cells total, depending on the configuration).
 
 There are some tests that can be run with: `python test_osse_tools.py`
 
