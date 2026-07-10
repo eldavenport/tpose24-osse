@@ -288,7 +288,7 @@ def compute_w_planefit(uv_samples, remove_barotropic=False, extrapolate_to_surfa
 
     Notes
     -----
-    Positions are projected onto a flat plane via _latlon_to_m (flat-Earth approximation).
+    Positions are projected onto a flat plane via _latlon_to_m.
     w=0 is assumed at at the surface by default, otherwise 0 at z_top if no extrapolation happens.
     """
     if extrapolate_to_surface:
@@ -300,7 +300,7 @@ def compute_w_planefit(uv_samples, remove_barotropic=False, extrapolate_to_surfa
 
     # Pseudoinverse of design matrix — computed once, applied to all (time, depth)
     A = np.column_stack([np.ones(len(lats)), x_m, y_m])  # (N, 3)
-    Ainv = np.linalg.pinv(A)                              # (3, N): solves overdetermined plane fit in one multiply
+    Ainv = np.linalg.pinv(A)                              # (3, N): pseudoinverse
 
     uv = uv_samples.compute()
     U = uv['U'].values  # (ntime, nglider, n_obs) — must stay in this order; see reshape below
@@ -314,7 +314,7 @@ def compute_w_planefit(uv_samples, remove_barotropic=False, extrapolate_to_surfa
 
     # Transpose to (nglider, ntime, n_obs) so the glider axis aligns with Ainv's (3, N),
     # then collapse (ntime, n_obs) → one axis to fit all times and depths in a single multiply.
-    # WARNING: assumes U.shape == (ntime, nglider, n_obs); assert this if dim ordering is ever uncertain.
+    # WARNING: assumes U.shape == (ntime, nglider, n_obs);
     cu = Ainv @ U.transpose(1, 0, 2).reshape(nglider, ntime * n_obs)  # (3, ntime*n_obs)
     cv = Ainv @ V.transpose(1, 0, 2).reshape(nglider, ntime * n_obs)  # row 0=intercept, 1=d/dx, 2=d/dy
     du_dx = cu[1].reshape(ntime, n_obs)
@@ -323,8 +323,8 @@ def compute_w_planefit(uv_samples, remove_barotropic=False, extrapolate_to_surfa
 
     obs_z = uv_samples.obs_depth.values      # midpoints, e.g. [-9, -11, ..., -69] for an 8 m min_depth
     # WARNING: only the first interval is used — assumes uniform depth spacing throughout
-    dz_obs = float(abs(obs_z[1] - obs_z[0])) if n_obs > 1 else float(abs(obs_z[0]) * 2)
-    z_top = obs_z[0] + dz_obs / 2            # shallowest interface; w=0 assumed here, not at 0 m
+    dz_obs = float(abs(obs_z[1] - obs_z[0]))
+    z_top = obs_z[0] + dz_obs / 2            # shallowest interface; w=0 assumed here, not at 0 m (if extrapolation is used then it is still at 0m)
     w_z = z_top - np.arange(n_obs + 1) * dz_obs   # interfaces: [z_top, z_top-dz, ..., z_top-n_obs*dz]
 
     # Integrate downward from w=0 at surface: w(k+1) = w(k) + div(k) * dz
