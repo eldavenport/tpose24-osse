@@ -16,6 +16,8 @@ Distribution workflow (observed = glider points, true = model field in the hull)
 """
 
 import json
+import os
+import re
 import warnings
 import numpy as np
 import xarray as xr
@@ -65,8 +67,33 @@ def load_cells(path):
     return [(c['center_lat'], [tuple(p) for p in c['positions']]) for c in cfg['cells']]
 
 
-def load_model(run_dir, iters, ref_date='2012-10-01', delta_t=300):
-    """Open MITgcm diag_state diagnostics lazily, masking fill values."""
+def _read_deltat(run_dir):
+    """Parse deltaT (s) from the run's `data` namelist (PARM03). None if absent."""
+    path = os.path.join(run_dir, 'data')
+    if not os.path.exists(path):
+        return None
+    with open(path) as f:
+        for line in f:
+            s = line.strip()
+            if s.startswith('#'):
+                continue
+            m = re.match(r'deltaT\s*=\s*([\d.eE+-]+)', s, re.IGNORECASE)
+            if m:
+                return float(m.group(1))
+    return None
+
+
+def load_model(run_dir, iters, ref_date='2012-10-01', delta_t=None):
+    """Open MITgcm diag_state diagnostics lazily, masking fill values.
+
+    delta_t defaults to the run's deltaT read from its `data` namelist; pass a
+    value to override. Falls back to 300 s if it cannot be read.
+    """
+    if delta_t is None:
+        delta_t = _read_deltat(run_dir)
+        if delta_t is None:
+            warnings.warn(f'deltaT not found in {run_dir}/data; using 300 s')
+            delta_t = 300
     ds = open_mdsdataset(
         data_dir=run_dir, grid_dir=run_dir,
         iters=iters, prefix=['diag_state'],
