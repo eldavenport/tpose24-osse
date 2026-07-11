@@ -10,8 +10,8 @@ equatorial Pacific, using TPOSE24 model output as truth.
 - **`plotting_tools.py`** — `plot_w_comparison`, `plot_velocity_map`, `plot_field_pdfs`, … plus the
   per-config experiment experiment figures used in `make_experiment_figs` notebooks. 
 - **`summary_fig_tools.py`** — shared style, helpers, and `make_fig*` builders for
-  the W-skill summary figures; used by `experiment_*/summary.ipynb` and
-  `compare_exp_1_2` (each notebook just loads `metrics.csv` and calls the builders).
+  the W-skill summary figures; used by `experiments/experiment_*/summary.ipynb` and
+  `experiments/compare_exp_1_2` (each notebook just loads `metrics.csv` and calls the builders).
 
 `osse_tools.py` provides three workflows:
 
@@ -38,7 +38,7 @@ equatorial Pacific, using TPOSE24 model output as truth.
 
 Functions like `_convex_hull_mask` can be used to find all the points inside any polygon (for the model "truth" averages). 
 
-Array configurations can live in `experiment_1/configs/` as lists of (lat, lon) positions. There are some examples in hex/, rectangle/ etc. 
+Array configurations can live in `experiments/experiment_1/configs/` as lists of (lat, lon) positions. 
   - the .json files define `positions` which is a union of all points in the array, and `cells` which are
     individual cells to compute W over. (you could realistically have 2 or 3 cells total, depending on the configuration).
 
