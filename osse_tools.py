@@ -947,6 +947,138 @@ def decorr_scale_from_curves(cur, thresh=1.0 / np.e):
     return L, Lx, Ly
 
 
+def mean_field_decorr(field, lon, lat, half_window_deg=3.0, max_lag_km=333.0,
+                      thresh=1.0 / np.e, min_frac=0.4):
+    """
+    Per-point spatial decorrelation length (km) of a static 2-D (time-mean) field.
+
+    autocorr_curves/decorr_scale_from_curves use each point's TIME series as the
+    statistical ensemble (the eddy/fluctuation field's coherence). This function is
+    for a single time-mean map, which has no time ensemble: around every grid point
+    it takes a +/- half_window_deg box and computes that box's SPATIAL autocorrelation
+    vs zonal and meridional lag, then the isotropic 1/e length L = sqrt(Lx*Ly). That
+    is the right ruler for how far the MEAN field stays coherent (e.g. how large a
+    footprint keeps the mean divergence ~linear), rather than the eddy field's scale.
+
+    Because the local window is the sample, measurable scales saturate near the window
+    half-width; keep `half_window_deg` a few times larger than the scales of interest.
+
+    Parameters
+    ----------
+    field : (y, x) array, NaN where undefined (land/mask)
+    lon, lat : 1-D degrees, the field's own grid
+    half_window_deg : half width of the local box used as the correlation sample
+    max_lag_km : largest separation searched (also capped at the window half-width)
+    thresh : correlation defining the scale (default 1/e)
+    min_frac : min fraction of the window that must be valid to trust a point
+
+    Returns
+    -------
+    L, Lx, Ly : (y, x) km arrays (NaN where undefined), matching decorr_scale_from_curves.
+    """
+    from scipy.ndimage import uniform_filter
+    F = np.asarray(field, float)
+    ny, nx = F.shape
+    valid0 = np.isfinite(F)
+
+    dlon = _grid_spacing_deg(lon)
+    dlat = _grid_spacing_deg(lat)
+    dx_km = dlon * _KM_PER_DEG * np.cos(np.radians(np.asarray(lat, float)))  # (ny,)
+    dy_km = dlat * _KM_PER_DEG
+
+    wy = max(1, int(round(half_window_deg / dlat)))
+    wx = max(1, int(round(half_window_deg / dlon)))
+    size = (2 * wy + 1, 2 * wx + 1)
+    box = size[0] * size[1]
+    nlag_x = min(wx, int(np.ceil(max_lag_km / float(np.nanmin(dx_km)))))
+    nlag_y = min(wy, int(np.ceil(max_lag_km / dy_km)))
+
+    def _boxsum(a):  # windowed sum; outside-array counts as 0 (paired with valid n)
+        return uniform_filter(a, size=size, mode='constant', cval=0.0) * box
+
+    def _corr_stack(nlag, axis):
+        """Local windowed Pearson correlation of F with F shifted by each lag k."""
+        c = np.empty((nlag + 1,) + F.shape, np.float32)
+        c[0] = 1.0
+        for k in range(1, nlag + 1):
+            B = np.full_like(F, np.nan)
+            vB = np.zeros_like(valid0)
+            if axis == 1:
+                B[:, :nx - k] = F[:, k:];     vB[:, :nx - k] = valid0[:, k:]
+            else:
+                B[:ny - k, :] = F[k:, :];      vB[:ny - k, :] = valid0[k:, :]
+            m = valid0 & vB
+            A0 = np.where(m, F, 0.0)
+            B0 = np.where(m, B, 0.0)
+            n = _boxsum(m.astype(float))
+            with np.errstate(divide='ignore', invalid='ignore'):
+                ma = _boxsum(A0) / n
+                mb = _boxsum(B0) / n
+                cov = _boxsum(A0 * B0) / n - ma * mb
+                va = _boxsum(A0 * A0) / n - ma * ma
+                vb = _boxsum(B0 * B0) / n - mb * mb
+                r = cov / np.sqrt(va * vb)
+            r[n < min_frac * box] = np.nan
+            c[k] = r.astype(np.float32)
+        return c
+
+    Lx = _efold_lag(_corr_stack(nlag_x, axis=1), thresh) * dx_km[:, None]
+    Ly = _efold_lag(_corr_stack(nlag_y, axis=0), thresh) * dy_km
+    L = np.sqrt(Lx * Ly)
+    for a in (Lx, Ly, L):
+        a[~valid0] = np.nan
+    return L, Lx, Ly
+
+
+def mean_field_point_autocorr(field, lon, lat, anchor_lon, anchor_lat,
+                              half_window_deg=3.0, thresh=1.0 / np.e):
+    """
+    Windowed spatial autocorrelation curve of a static (time-mean) field at ONE anchor.
+
+    The single-point analogue of mean_field_decorr: take the +/- half_window_deg box
+    around the nearest grid point to (anchor_lat, anchor_lon) and correlate the box
+    with itself shifted by each zonal / meridional lag, so the correlation-vs-separation
+    curve and its 1/e crossing show the decorrelation scale of the MEAN field at that
+    location. No time ensemble is used (contrast point_autocorr, which correlates the
+    anchor's time series with its neighbours').
+
+    field : (y, x) time-mean map, NaN where undefined.  Returns
+    dict(sep_x_deg, r_x, sep_y_deg, r_y, lon0, lat0, Lx_deg, Ly_deg, Lx_km, Ly_km),
+    matching point_autocorr's keys plus the 1/e crossings.
+    """
+    F = np.asarray(field, float)
+    lon = np.asarray(lon, float); lat = np.asarray(lat, float)
+    ix = int(np.argmin(np.abs(lon - anchor_lon)))
+    iy = int(np.argmin(np.abs(lat - anchor_lat)))
+    dlon = _grid_spacing_deg(lon); dlat = _grid_spacing_deg(lat)
+    wx = max(1, int(round(half_window_deg / dlon)))
+    wy = max(1, int(round(half_window_deg / dlat)))
+    b = F[max(0, iy - wy):iy + wy + 1, max(0, ix - wx):ix + wx + 1]
+    dx_km = dlon * _KM_PER_DEG * np.cos(np.radians(lat[iy]))
+    dy_km = dlat * _KM_PER_DEG
+
+    def _curve(nlag, axis):
+        r = np.full(nlag + 1, np.nan, np.float32)
+        for k in range(nlag + 1):
+            A = (b if k == 0 else b[:, :-k]) if axis == 1 else (b if k == 0 else b[:-k, :])
+            B = b[:, k:] if axis == 1 else b[k:, :]
+            A = A.ravel(); B = B.ravel()
+            m = np.isfinite(A) & np.isfinite(B)
+            if m.sum() >= 3 and A[m].std() > 0 and B[m].std() > 0:
+                r[k] = np.corrcoef(A[m], B[m])[0, 1]
+        return r
+
+    r_x = _curve(b.shape[1] - 1, 1)
+    r_y = _curve(b.shape[0] - 1, 0)
+    fx = float(_efold_lag(r_x[:, None, None], thresh)[0, 0])
+    fy = float(_efold_lag(r_y[:, None, None], thresh)[0, 0])
+    return dict(sep_x_deg=np.arange(len(r_x)) * dlon, r_x=r_x,
+                sep_y_deg=np.arange(len(r_y)) * dlat, r_y=r_y,
+                lon0=lon[ix], lat0=lat[iy],
+                Lx_deg=fx * dlon, Ly_deg=fy * dlat,
+                Lx_km=fx * dx_km, Ly_km=fy * dy_km)
+
+
 def fixed_lag_corr(cur, sep_deg):
     """
     Isotropic autocorrelation at a fixed separation (degrees), from autocorr_curves.

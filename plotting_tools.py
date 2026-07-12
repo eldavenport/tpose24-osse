@@ -260,14 +260,57 @@ def plot_w_comparison(w_est, w_model, depth_range=None, time_range=None, point_d
     return fig
 
 
-def plot_velocity_map(ds, positions, max_depth=70, time_range=None, cells=None):
+def compute_velocity_means(ds, max_depth=70, time_range=None, level_depth=None):
+    """Compute the three U, V, W mean fields for a velocity map.
+
+    These depend only on the model and the averaging choice — NOT on the array
+    configuration (which only sets the marker overlay and zoom) — so compute this
+    once and reuse it across every config's `plot_velocity_map` call.
+
+    If `level_depth` is None, each field is the depth- AND time-mean over surface
+    to `max_depth`. Otherwise each field is the TIME mean at the single model level
+    nearest to `level_depth` (e.g. 70 for the bottom of the sampling range).
+
+    Returns a list of 3 panel tuples ``(data, xx, yy, title)`` (U, V, W).
     """
-    Three-panel map of depth- and time-averaged U, V, W with glider positions overlaid.
+    ds_t = ds if time_range is None else ds.sel(time=slice(*time_range))
+
+    if level_depth is None:
+        # Depth/time mean — mask below max_depth, then average lazily before computing
+        u_mean = ds_t.UVEL.where(ds_t.Z  >= -max_depth).mean(['time', 'Z']).compute()
+        v_mean = ds_t.VVEL.where(ds_t.Z  >= -max_depth).mean(['time', 'Z']).compute()
+        w_mean = ds_t.WVEL.where(ds_t.Zl >= -max_depth).mean(['time', 'Zl']).compute()
+        u_ttl, v_ttl, w_ttl = (f'Depth/time mean {c}  (m s⁻¹)' for c in 'UVW')
+    else:
+        # Time mean at the single model level nearest to level_depth (U/V on Z, W on Zl)
+        u_sel = ds_t.UVEL.sel(Z=-level_depth, method='nearest')
+        v_sel = ds_t.VVEL.sel(Z=-level_depth, method='nearest')
+        w_sel = ds_t.WVEL.sel(Zl=-level_depth, method='nearest')
+        u_mean = u_sel.mean('time').compute()
+        v_mean = v_sel.mean('time').compute()
+        w_mean = w_sel.mean('time').compute()
+        zc, zl = -float(u_sel.Z.values), -float(w_sel.Zl.values)
+        u_ttl = f'Time mean U at {zc:.0f} m  (m s⁻¹)'
+        v_ttl = f'Time mean V at {zc:.0f} m  (m s⁻¹)'
+        w_ttl = f'Time mean W at {zl:.0f} m  (m s⁻¹)'
+
+    return [
+        (u_mean, ds_t.XG.values, ds_t.YC.values, u_ttl),
+        (v_mean, ds_t.XC.values, ds_t.YG.values, v_ttl),
+        (w_mean, ds_t.XC.values, ds_t.YC.values, w_ttl),
+    ]
+
+
+def plot_velocity_map(ds, positions, max_depth=70, time_range=None, cells=None,
+                      level_depth=None, means=None):
+    """
+    Three-panel map of U, V, W with glider positions overlaid.
 
     Parameters
     ----------
     ds : xr.Dataset
-        From load_model.
+        From load_model. Only used to compute the mean fields; may be None if
+        `means` is supplied.
     positions : list of (lat, lon)
         Used only to set the map's zoom extent; ignored for markers if cells is given.
     max_depth : float
@@ -279,17 +322,22 @@ def plot_velocity_map(ds, positions, max_depth=70, time_range=None, cells=None):
         positions) as a colored dot. Gliders (positions offset from the mooring
         meridian) are black stars and moorings (positions on the meridian) black
         dots, drawn once regardless of how many cells share them.
+    level_depth : float, optional
+        If None (default), each panel is the depth- AND time-mean over surface to
+        max_depth. If set, each panel is the TIME mean at the single model level
+        nearest to `level_depth` (e.g. 70 for the bottom of the sampling range).
+    means : list of (data, xx, yy, title), optional
+        Precomputed mean fields from `compute_velocity_means`. When looping over
+        many configs, compute these once and pass them in — the fields are the same
+        for every config, so this skips the expensive re-read/re-reduce each time.
 
     Returns
     -------
     matplotlib.figure.Figure
     """
-    ds_t = ds if time_range is None else ds.sel(time=slice(*time_range))
-
-    # Depth/time mean — mask below max_depth, then average lazily before computing
-    u_mean = ds_t.UVEL.where(ds_t.Z  >= -max_depth).mean(['time', 'Z']).compute()
-    v_mean = ds_t.VVEL.where(ds_t.Z  >= -max_depth).mean(['time', 'Z']).compute()
-    w_mean = ds_t.WVEL.where(ds_t.Zl >= -max_depth).mean(['time', 'Zl']).compute()
+    if means is None:
+        means = compute_velocity_means(ds, max_depth=max_depth,
+                                       time_range=time_range, level_depth=level_depth)
 
     glider_lats = [p[0] for p in positions]
     glider_lons = [p[1] for p in positions]
@@ -299,11 +347,7 @@ def plot_velocity_map(ds, positions, max_depth=70, time_range=None, cells=None):
 
     fig, axes = plt.subplots(1, 3, figsize=(18, 5))
 
-    panels = [
-        (u_mean, ds_t.XG.values, ds_t.YC.values, cmo.balance, 'Depth/time mean U  (m s⁻¹)'),
-        (v_mean, ds_t.XC.values, ds_t.YG.values, cmo.balance, 'Depth/time mean V  (m s⁻¹)'),
-        (w_mean, ds_t.XC.values, ds_t.YC.values, cmo.balance, 'Depth/time mean W  (m s⁻¹)'),
-    ]
+    panels = [(data, xx, yy, cmo.balance, title) for data, xx, yy, title in means]
 
     if cells is not None:
         from scipy.spatial import ConvexHull
@@ -315,14 +359,22 @@ def plot_velocity_map(ds, positions, max_depth=70, time_range=None, cells=None):
         moorings = [p for p in all_pos if abs(p[1] - mooring_lon) < 1e-6]
         gliders_ = [p for p in all_pos if abs(p[1] - mooring_lon) >= 1e-6]
 
+    import matplotlib.cm as mcm
+    from matplotlib.colors import Normalize
     for ax, (data, xx, yy, cmap, title) in zip(axes, panels):
         vmax = float(np.nanpercentile(np.abs(data.values), 98))
         levels = np.linspace(-vmax, vmax, 100)   # 100 filled levels, symmetric about 0
-        im = ax.contourf(xx, yy, data.values, levels=levels, cmap=cmap, extend='both')
-        plt.colorbar(im, ax=ax, shrink=0.85, pad=0.02, label='m s⁻¹',
+        ax.contourf(xx, yy, data.values, levels=levels, cmap=cmap, extend='both')
+        # Build the colorbar from a continuous Normalize (not the contourf's discrete
+        # boundaries) so evenly-spaced tick values plot at evenly-spaced positions —
+        # a contourf colorbar snaps ticks to level edges and looks irregular.
+        sm = mcm.ScalarMappable(norm=Normalize(-vmax, vmax), cmap=cmap)
+        plt.colorbar(sm, ax=ax, shrink=0.85, pad=0.02, label='m s⁻¹', extend='both',
                      ticks=mticker.MaxNLocator(nbins=5, symmetric=True))
-        # clean, evenly spaced lon/lat ticks (contourf leaves the raw grid otherwise)
-        ax.xaxis.set_major_locator(mticker.MaxNLocator(nbins=5))
+        # clean, evenly spaced lon/lat ticks (contourf leaves the raw grid otherwise).
+        # Few x ticks + 1-decimal labels so narrow-extent configs don't overlap.
+        ax.xaxis.set_major_locator(mticker.MaxNLocator(nbins=4, prune='both'))
+        ax.xaxis.set_major_formatter(mticker.FormatStrFormatter('%.1f'))
         ax.yaxis.set_major_locator(mticker.MaxNLocator(nbins=5))
         if cells is None:
             ax.scatter(glider_lons, glider_lats, c='k', s=40, zorder=5, marker='o')
@@ -389,28 +441,44 @@ def render_w_comparisons(m, here, efig, point_depth=-50):
 
 def render_velocity_maps(here, efig, run_dir, iters, spinup_end="2012-10-11", max_depth=70,
                          delta_t=300):
-    """Per-config velocity/vorticity context maps. Opens the model only if at
-    least one config still lacks its velocity_map.png. Returns the number written.
-    `delta_t` is the model timestep (s) used to map iters -> time (60 for the
-    dt60 runs, 300 for the standard runs)."""
+    """Per-config velocity/vorticity context maps. Writes two figures per config:
+    `velocity_map.png` (depth/time mean over surface->max_depth) and
+    `velocity_map_{max_depth}m.png` (time mean at the bottom sampling level).
+    Opens the model only if at least one config still lacks a figure. Returns the
+    number of configs (re)rendered. `delta_t` is the model timestep (s) used to map
+    iters -> time (60 for the dt60 runs, 300 for the standard runs)."""
+    bottom_name = f"velocity_map_{max_depth:g}m.png"
     cfg_paths = sorted(glob.glob(os.path.join(here, "configs", "**", "*.json"), recursive=True))
-    pending = [p for p in cfg_paths
-               if not os.path.exists(
-                   os.path.join(efig, json.load(open(p))["name"], "velocity_map.png"))]
-    print(f"{len(pending)} configs need a velocity_map "
-          f"({len(cfg_paths) - len(pending)} already have one)")
+    def missing(p):
+        d = os.path.join(efig, json.load(open(p))["name"])
+        return not (os.path.exists(os.path.join(d, "velocity_map.png"))
+                    and os.path.exists(os.path.join(d, bottom_name)))
+    pending = [p for p in cfg_paths if missing(p)]
+    print(f"{len(pending)} configs need velocity maps "
+          f"({len(cfg_paths) - len(pending)} already complete)")
     if not pending:
         return 0
     ds_model = ot.load_model(run_dir, iters, delta_t=delta_t).sel(time=slice(spinup_end, None))
+    # The mean fields are identical for every config (config only sets the overlay
+    # and zoom), so compute each set ONCE up front and reuse it across all configs.
+    print("computing depth/time-mean and bottom-level mean fields (once)...")
+    depth_means = compute_velocity_means(ds_model, max_depth=max_depth)
+    bottom_means = compute_velocity_means(ds_model, max_depth=max_depth, level_depth=max_depth)
     for path in pending:
         cfg = json.load(open(path))
         cells = ot.load_cells(path)
         positions = sorted({p for _, pos in cells for p in pos})
         cells_plot = [(f"{cl:+.1f}", pos, f"C{i}") for i, (cl, pos) in enumerate(cells)]
-        fig = plot_velocity_map(ds_model, positions, max_depth=max_depth, cells=cells_plot)
-        fig.suptitle(f"{cfg['name']}  ({cfg['description']})", fontsize=11, y=1.02)
         outdir = os.path.join(efig, cfg["name"]); os.makedirs(outdir, exist_ok=True)
+        # depth/time-mean map
+        fig = plot_velocity_map(None, positions, cells=cells_plot, means=depth_means)
+        fig.suptitle(f"{cfg['name']}  ({cfg['description']})", fontsize=11, y=1.02)
         fig.savefig(os.path.join(outdir, "velocity_map.png"), dpi=130, bbox_inches="tight")
+        plt.close(fig)
+        # time-mean at the bottom sampling level
+        fig = plot_velocity_map(None, positions, cells=cells_plot, means=bottom_means)
+        fig.suptitle(f"{cfg['name']}  ({cfg['description']})", fontsize=11, y=1.02)
+        fig.savefig(os.path.join(outdir, bottom_name), dpi=130, bbox_inches="tight")
         plt.close(fig)
     return len(pending)
 
@@ -650,17 +718,18 @@ def plot_footprint_profiles(profiles, coord, rows, widths, shapes, colors,
     return fname
 
 
-def plot_point_autocorr(per_var, suptitle, fname, xmax_deg=None):
+def plot_point_autocorr(per_var, suptitle, fname, xmax_deg=None, thresh=None):
     """
-    Raw spatial autocorrelation function anchored at a single grid point, one panel
-    per variable: zonal (solid) and meridional (dashed) correlation vs separation.
+    Spatial autocorrelation function anchored at a single grid point, one panel per
+    variable: zonal (solid) and meridional (dashed) correlation vs separation.
 
-    Deliberately shows NO chosen cutoff scale -- no 1/e line, no reference levels, no
-    array-span shading (contrast plot_autocorr_curves). Just the curves, with r=0
-    marked so the negative lobe (dominant eddy/wave wavelength) is readable.
+    r=0 is marked so any negative lobe is readable. If `thresh` is given (e.g. 1/e),
+    a horizontal reference line is drawn at it and the zonal/meridional 1/e crossings
+    (pac['Lx_deg'], pac['Ly_deg']) are marked with vertical ticks -- used for the
+    mean-field decorrelation curves, where the crossing IS the quantity of interest.
 
-    per_var : list of (var_title, dict) from osse_tools.point_autocorr
-              (sep_x_deg, r_x, sep_y_deg, r_y).
+    per_var : list of (var_title, dict) from osse_tools.mean_field_point_autocorr
+              (or point_autocorr): sep_x_deg, r_x, sep_y_deg, r_y [, Lx_deg, Ly_deg].
     """
     from matplotlib.lines import Line2D
     n = len(per_var)
@@ -673,6 +742,12 @@ def plot_point_autocorr(per_var, suptitle, fname, xmax_deg=None):
         ax.plot(pac['sep_x_deg'], pac['r_x'], '-', color='#1b6ca8', lw=1.9)
         ax.plot(pac['sep_y_deg'], pac['r_y'], '--', color='#c0392b', lw=1.9)
         ax.axhline(0, color='k', lw=0.7)
+        if thresh is not None:
+            ax.axhline(thresh, color='0.5', lw=0.8, ls=':')
+            if np.isfinite(pac.get('Lx_deg', np.nan)):
+                ax.axvline(pac['Lx_deg'], color='#1b6ca8', lw=0.8, ls=':')
+            if np.isfinite(pac.get('Ly_deg', np.nan)):
+                ax.axvline(pac['Ly_deg'], color='#c0392b', lw=0.8, ls=':')
         xm = xmax_deg or max(pac['sep_x_deg'][-1], pac['sep_y_deg'][-1])
         ax.set_xlim(0, xm)
         ax.set_ylim(ylo, 1.02)
