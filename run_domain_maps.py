@@ -1,22 +1,18 @@
 """
-Domain maps of TIME-MEAN velocity structure: time/depth-mean velocity, the spatial
-decorrelation scale of the mean currents, the mean horizontal divergence and its
-decorrelation scale, and the mean-current gradient magnitude and shear components.
-Every diagnostic is of the time-mean field (the eddy/fluctuation-field autocorrelation
-diagnostics were removed). Figures are saved under
+Domain maps of TIME-MEAN velocity structure: time/depth-mean velocity, the mean
+horizontal divergence, and the mean-current gradient magnitude and shear components.
+Every diagnostic is of the time-mean field. Figures are saved under
 domain/{full_domain,crop_140}/{velocities,gradients}/ — full-domain vs equatorial-crop
 views, split into velocity/current diagnostics vs gradient ones.
 
 Split into two phases so figure styling can be re-tuned without re-reading the model:
   * COMPUTE — reads the model once and caches only the time/depth-mean U, V, W fields
     per config to CACHE_DIR (a few small 2-D fields each).
-  * PLOT    — reads the cache and derives+renders all figures; no model access. The
-    mean-field decorrelation maps are computed here (a few seconds per config).
+  * PLOT    — reads the cache and derives+renders all figures; no model access.
 
 For each depth cutoff (0-70/120/250 m) and window (3-month '', 1-month '_1mo') it
-writes, under velocities/: domain_mean_velocity, domain_current_decorr,
-domain_divergence, domain_divergence_decorr; under gradients/: domain_gradient_mag,
-domain_gradient_shear.
+writes, under velocities/: domain_mean_velocity, domain_divergence; under
+gradients/: domain_gradient_mag, domain_gradient_shear.
 
 Usage:
     python run_domain_maps.py [depths_csv] [periods_csv] [mode]
@@ -51,11 +47,6 @@ VARS = ('UVEL', 'VVEL', 'WVEL')          # -> U, V, W
 LABEL = {'UVEL': 'U', 'VVEL': 'V', 'WVEL': 'W'}
 CROP_LON = slice(217, 223)
 CROP_LAT = slice(-3, 3)
-MAX_LAG_KM = 600.0                # (kept for run_point_autocorr, which imports it)
-# half-width (deg) of the local window used for the time-MEAN-field decorrelation
-# scale: the mean map has no time ensemble, so its spatial coherence is measured from
-# a moving spatial window. Measurable scales saturate near this half-width.
-DECORR_HALF_WIN_DEG = 3.0
 # shared color-limit groups: U & V share one scale (directly comparable), W its own
 GROUP_UVW = ['uv', 'uv', 'w']                              # for U/V/W panels
 # shear figure: the U row is flipped (∂U/∂y, ∂U/∂x) so each column holds one shared
@@ -119,9 +110,9 @@ def _cache_path(d, pkey):
 def compute_config(S):
     """
     Time/depth-mean U, V, W for one depth/window from the depth-mean series `S`
-    (dict var -> DataArray(time, y, x)). Every mean-field diagnostic (decorrelation
-    scale, divergence, gradients) derives from these means at plot time, so the cache
-    stays a few small 2-D fields and re-plotting never touches the model.
+    (dict var -> DataArray(time, y, x)). Every mean-field diagnostic (divergence,
+    gradients) derives from these means at plot time, so the cache stays a few small
+    2-D fields and re-plotting never touches the model.
     """
     return {'means': {v: S[v].mean('time') for v in VARS}}
 
@@ -142,45 +133,20 @@ def plot_config(cache, d, suf, plabel):
                cbar_label='m s$^{-1}$', cmap=cmo.balance, diverging=True,
                suptitle=f'{head} — time/depth-mean velocity')
 
-    # --- 1a. mean-current decorrelation scale (km) ------------------------
-    # Windowed spatial autocorrelation of the *time-mean* field (not the eddy field):
-    # how far the mean current stays coherent, in a DECORR_HALF_WIN_DEG window.
-    Lc = []
-    for v in VARS:
-        m = means[v]
-        xdim, ydim = _xy(m)
-        L = ot.mean_field_decorr(m.values, m[xdim].values, m[ydim].values,
-                                 half_window_deg=DECORR_HALF_WIN_DEG)[0]
-        Lc.append(_as_da(L, m))
-    full, crop = _panels(Lc, [f'{LABEL[v]} decorrelation' for v in VARS])
-    _save_pair(f'domain_current_decorr_{d}m{suf}', full, crop, 'velocities',
-               cbar_label='length scale (km)', cmap=cmo.thermal, groups=GROUP_UVW,
-               suptitle=(f'{head} — mean-current decorrelation scale '
-                         f'(1/e, {DECORR_HALF_WIN_DEG:g}° window)'))
-
-    # --- 1b. mean horizontal divergence + its decorrelation scale ---------
-    # δ = ∂ū/∂x + ∂v̄/∂y is exactly what a plane fit integrates for the mean w, so its
-    # decorrelation scale is the direct footprint-size ruler (vs the gradient-magnitude
-    # proxy). U and V sit on staggered grids; the half-cell offset is negligible against
-    # these scales, so the components are added index-aligned onto the tracer (W) grid.
+    # --- 1. mean horizontal divergence ------------------------------------
+    # δ = ∂ū/∂x + ∂v̄/∂y is exactly what a plane fit integrates for the mean w. U and V
+    # sit on staggered grids; the half-cell offset is negligible against these scales, so
+    # the components are added index-aligned onto the tracer (W) grid.
     ubar, vbar, wc = means['UVEL'], means['VVEL'], means['WVEL']
     ux = ot.gradient_components(ubar.values, ubar[_xy(ubar)[0]].values,
                                 ubar[_xy(ubar)[1]].values)[0]
     vy = ot.gradient_components(vbar.values, vbar[_xy(vbar)[0]].values,
                                 vbar[_xy(vbar)[1]].values)[1]
-    wx, wy = _xy(wc)
     div = _as_da(ux + vy, wc)
-    Ldiv = _as_da(ot.mean_field_decorr(div.values, wc[wx].values, wc[wy].values,
-                                       half_window_deg=DECORR_HALF_WIN_DEG)[0], wc)
     full, crop = _panels([div], ['mean divergence δ'])
     _save_pair(f'domain_divergence_{d}m{suf}', full, crop, 'velocities',
                cbar_label='s$^{-1}$', cmap=cmo.balance, diverging=True, ncols=1,
                suptitle=f'{head} — mean-current horizontal divergence')
-    full, crop = _panels([Ldiv], ['δ decorrelation'])
-    _save_pair(f'domain_divergence_decorr_{d}m{suf}', full, crop, 'velocities',
-               cbar_label='length scale (km)', cmap=cmo.thermal, ncols=1,
-               suptitle=(f'{head} — mean-divergence decorrelation scale '
-                         f'(1/e, {DECORR_HALF_WIN_DEG:g}° window)'))
 
     # --- 2. gradient magnitude of the mean currents (recompute from means) -
     Gmag = []

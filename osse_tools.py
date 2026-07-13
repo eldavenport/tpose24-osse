@@ -763,7 +763,7 @@ def dist_stats(obs, true):
 
 
 # ---------------------------------------------------------------------------
-# Domain-map diagnostics: depth-mean time series, spatial decorrelation, and
+# Domain-map diagnostics: depth-mean time series, spatial autocorrelation, and
 # horizontal gradients of the mean velocity field. Used by run_domain_maps.py
 # to build the domain/ maps (mirrors the mean-velocity figures in demo_domain).
 # ---------------------------------------------------------------------------
@@ -836,346 +836,68 @@ def gradient_magnitude(field, lon, lat):
     return np.hypot(fx, fy)
 
 
-def _lag_corr_curve(an, nlag, axis):
+def _windowed_autocov(field, lon, lat, anchor_lon, anchor_lat,
+                      half_window_deg, min_frac=0.4):
     """
-    Lag-correlation curve of a normalised anomaly field along one spatial axis.
+    Windowed 2-D spatial autocovariance (normalised so r(0,0)=1) of a static field around
+    an anchor, by FFT. Shared core of mean_field_point_autocorr (its axis slices) and
+    mean_field_point_corr_map (the 2-D pattern), so those two coincide by construction.
 
-    `an` is (time, y, x) with zero time-mean and unit time-std at every point, so
-    the time average of an_i * an_j is the Pearson correlation between points i and
-    j. For each separation d = 0..nlag the forward (i, i+d) and backward (i, i-d)
-    correlations are averaged, giving c[d] on the full grid (NaN where a point has
-    no in-domain neighbour at that lag). `axis` is 1 (meridional) or 2 (zonal).
+    Uses ONE window mean and ONE variance (the proper, positive-definite / spectrally
+    consistent autocorrelation estimator) rather than re-demeaning each lag. Returns
+    r_full ((2*ny-1, 2*nx-1) float32, NaN where fewer than min_frac of the box overlaps),
+    sep_x_deg, sep_y_deg (full symmetric lag axes in degrees), dx_km, dy_km, lon0, lat0.
     """
-    T = an.shape[0]
-    shp = an.shape[1:]
-    Np = an.shape[axis]
-    c = np.full((nlag + 1,) + shp, np.nan, np.float32)
-    c[0] = 1.0
-    for d in range(1, nlag + 1):
-        s1 = [slice(None)] * 3; s2 = [slice(None)] * 3
-        s1[axis] = slice(0, Np - d); s2[axis] = slice(d, Np)
-        r = (an[tuple(s1)] * an[tuple(s2)]).sum(0) / T          # (grid minus d along axis)
-        fwd = np.full(shp, np.nan, np.float32)
-        bwd = np.full(shp, np.nan, np.float32)
-        fs = [slice(None)] * 2; bs = [slice(None)] * 2
-        fs[axis - 1] = slice(0, Np - d); bs[axis - 1] = slice(d, Np)
-        fwd[tuple(fs)] = r; bwd[tuple(bs)] = r
-        with warnings.catch_warnings():           # edge points have no neighbour
-            warnings.simplefilter('ignore', RuntimeWarning)
-            c[d] = np.nanmean(np.stack([fwd, bwd]), 0)
-    return c
-
-
-def _efold_lag(c, thresh):
-    """
-    Fractional lag at which a lag-correlation curve c[0..nlag] first drops to thresh.
-
-    Linear interpolation between the last lag >= thresh and the first below it. If
-    the curve never crosses within the window it is capped at the maximum lag; NaN
-    where the curve is undefined (edges) at the crossing.
-    """
-    nlagp1 = c.shape[0]
-    below = c < thresh
-    below[0] = False
-    ever = below.any(0)
-    first = np.argmax(below, 0)                    # first True lag; 0 if never
-    k = np.clip(np.where(ever, first, nlagp1 - 1), 1, nlagp1 - 1)
-    c1 = np.take_along_axis(c, k[None] - 1, 0)[0]  # >= thresh (or capped)
-    c2 = np.take_along_axis(c, k[None], 0)[0]      # <  thresh (or capped)
-    denom = c1 - c2
-    with np.errstate(divide='ignore', invalid='ignore'):
-        step = np.where(denom > 0, (c1 - thresh) / denom, 0.0)
-    frac = (k - 1) + step
-    frac = np.where(ever, frac, nlagp1 - 1).astype(np.float32)
-    frac[~(np.isfinite(c1) & np.isfinite(c2))] = np.nan
-    return frac
-
-
-def autocorr_curves(field, lon, lat, max_lag_km=600.0):
-    """
-    Zonal and meridional lag-correlation curves of a (time, y, x) field.
-
-    At every grid point the temporal anomaly is normalised to unit variance, so the
-    time average of the product of two points IS their Pearson correlation. For each
-    separation the forward/backward correlations are averaged (see _lag_corr_curve),
-    giving the dimensionless autocorrelation vs separation along x and along y.
-
-    Returns (bundled in a dict so callers can pick what they need)
-    -------
-    cx, cy : (nlag+1, y, x) float32   correlation at lag 0..nlag (zonal, meridional)
-    sep_x_deg, sep_y_deg : (nlag+1,)  separation of each lag in degrees
-    dx_km : (y,)  zonal grid spacing in km (varies with lat);  dy_km : float
-    valid : (y, x) bool  points with non-degenerate time series
-    """
-    f = np.asarray(field, np.float32)
-    mean = f.mean(0)
-    std = np.where(f.std(0) == 0, np.nan, f.std(0))
-    an = (f - mean) / std
-    valid = np.isfinite(an[0])
-    an = np.nan_to_num(an, copy=False)
-
-    dlon = _grid_spacing_deg(lon)
-    dlat = _grid_spacing_deg(lat)
-    dx_km = dlon * _KM_PER_DEG * np.cos(np.radians(np.asarray(lat, float)))  # (Ny,)
-    dy_km = dlat * _KM_PER_DEG
-    nlag_x = int(np.ceil(max_lag_km / float(np.nanmin(dx_km))))
-    nlag_y = int(np.ceil(max_lag_km / dy_km))
-
-    cx = _lag_corr_curve(an, nlag_x, axis=2)
-    cy = _lag_corr_curve(an, nlag_y, axis=1)
-    return dict(cx=cx, cy=cy,
-                sep_x_deg=np.arange(nlag_x + 1) * dlon,
-                sep_y_deg=np.arange(nlag_y + 1) * dlat,
-                dx_km=dx_km, dy_km=dy_km, valid=valid)
-
-
-def decorr_scale_from_curves(cur, thresh=1.0 / np.e):
-    """
-    Isotropic decorrelation length (km) from precomputed autocorr_curves output.
-
-    The zonal (Lx) and meridional (Ly) separations at which each point's curve first
-    falls to `thresh` (default 1/e) are found by interpolation; the isotropic scale
-    is the geometric mean sqrt(Lx * Ly). Returns (L, Lx, Ly) as (y, x) km arrays.
-    """
-    frac_x = _efold_lag(cur['cx'], thresh)
-    frac_y = _efold_lag(cur['cy'], thresh)
-    Lx = frac_x * cur['dx_km'][:, None]
-    Ly = frac_y * cur['dy_km']
-    L = np.sqrt(Lx * Ly)
-    for a in (Lx, Ly, L):
-        a[~cur['valid']] = np.nan
-    return L, Lx, Ly
-
-
-def mean_field_decorr(field, lon, lat, half_window_deg=3.0, max_lag_km=333.0,
-                      thresh=1.0 / np.e, min_frac=0.4):
-    """
-    Per-point spatial decorrelation length (km) of a static 2-D (time-mean) field.
-
-    autocorr_curves/decorr_scale_from_curves use each point's TIME series as the
-    statistical ensemble (the eddy/fluctuation field's coherence). This function is
-    for a single time-mean map, which has no time ensemble: around every grid point
-    it takes a +/- half_window_deg box and computes that box's SPATIAL autocorrelation
-    vs zonal and meridional lag, then the isotropic 1/e length L = sqrt(Lx*Ly). That
-    is the right ruler for how far the MEAN field stays coherent (e.g. how large a
-    footprint keeps the mean divergence ~linear), rather than the eddy field's scale.
-
-    Because the local window is the sample, measurable scales saturate near the window
-    half-width; keep `half_window_deg` a few times larger than the scales of interest.
-
-    Parameters
-    ----------
-    field : (y, x) array, NaN where undefined (land/mask)
-    lon, lat : 1-D degrees, the field's own grid
-    half_window_deg : half width of the local box used as the correlation sample
-    max_lag_km : largest separation searched (also capped at the window half-width)
-    thresh : correlation defining the scale (default 1/e)
-    min_frac : min fraction of the window that must be valid to trust a point
-
-    Returns
-    -------
-    L, Lx, Ly : (y, x) km arrays (NaN where undefined), matching decorr_scale_from_curves.
-    """
-    from scipy.ndimage import uniform_filter
+    from scipy.signal import fftconvolve
     F = np.asarray(field, float)
-    ny, nx = F.shape
-    valid0 = np.isfinite(F)
-
-    dlon = _grid_spacing_deg(lon)
-    dlat = _grid_spacing_deg(lat)
-    dx_km = dlon * _KM_PER_DEG * np.cos(np.radians(np.asarray(lat, float)))  # (ny,)
-    dy_km = dlat * _KM_PER_DEG
-
-    wy = max(1, int(round(half_window_deg / dlat)))
+    lon = np.asarray(lon, float); lat = np.asarray(lat, float)
+    ix = int(np.argmin(np.abs(lon - anchor_lon)))
+    iy = int(np.argmin(np.abs(lat - anchor_lat)))
+    dlon = _grid_spacing_deg(lon); dlat = _grid_spacing_deg(lat)
     wx = max(1, int(round(half_window_deg / dlon)))
-    size = (2 * wy + 1, 2 * wx + 1)
-    box = size[0] * size[1]
-    nlag_x = min(wx, int(np.ceil(max_lag_km / float(np.nanmin(dx_km)))))
-    nlag_y = min(wy, int(np.ceil(max_lag_km / dy_km)))
-
-    def _boxsum(a):  # windowed sum; outside-array counts as 0 (paired with valid n)
-        return uniform_filter(a, size=size, mode='constant', cval=0.0) * box
-
-    def _corr_stack(nlag, axis):
-        """Local windowed Pearson correlation of F with F shifted by each lag k."""
-        c = np.empty((nlag + 1,) + F.shape, np.float32)
-        c[0] = 1.0
-        for k in range(1, nlag + 1):
-            B = np.full_like(F, np.nan)
-            vB = np.zeros_like(valid0)
-            if axis == 1:
-                B[:, :nx - k] = F[:, k:];     vB[:, :nx - k] = valid0[:, k:]
-            else:
-                B[:ny - k, :] = F[k:, :];      vB[:ny - k, :] = valid0[k:, :]
-            m = valid0 & vB
-            A0 = np.where(m, F, 0.0)
-            B0 = np.where(m, B, 0.0)
-            n = _boxsum(m.astype(float))
-            with np.errstate(divide='ignore', invalid='ignore'):
-                ma = _boxsum(A0) / n
-                mb = _boxsum(B0) / n
-                cov = _boxsum(A0 * B0) / n - ma * mb
-                va = _boxsum(A0 * A0) / n - ma * ma
-                vb = _boxsum(B0 * B0) / n - mb * mb
-                r = cov / np.sqrt(va * vb)
-            r[n < min_frac * box] = np.nan
-            c[k] = r.astype(np.float32)
-        return c
-
-    Lx = _efold_lag(_corr_stack(nlag_x, axis=1), thresh) * dx_km[:, None]
-    Ly = _efold_lag(_corr_stack(nlag_y, axis=0), thresh) * dy_km
-    L = np.sqrt(Lx * Ly)
-    for a in (Lx, Ly, L):
-        a[~valid0] = np.nan
-    return L, Lx, Ly
+    wy = max(1, int(round(half_window_deg / dlat)))
+    box = F[max(0, iy - wy):iy + wy + 1, max(0, ix - wx):ix + wx + 1]
+    ny, nx = box.shape
+    mask = np.isfinite(box).astype(float)
+    B = np.where(mask > 0, box - np.nanmean(box), 0.0)     # mean-removed anomaly; land->0
+    num = fftconvolve(B, B[::-1, ::-1], mode='full')       # autocovariance (single mean)
+    cnt = fftconvolve(mask, mask[::-1, ::-1], mode='full')  # per-lag overlap counts
+    cy, cx = ny - 1, nx - 1                                 # zero-lag at the centre
+    with np.errstate(divide='ignore', invalid='ignore'):
+        acov = num / cnt
+        r = acov / acov[cy, cx]                            # normalise so r(0,0)=1
+    r[cnt < min_frac * (ny * nx)] = np.nan
+    dx_km = dlon * _KM_PER_DEG * np.cos(np.radians(lat[iy]))
+    dy_km = dlat * _KM_PER_DEG
+    return (r.astype(np.float32), np.arange(-cx, cx + 1) * dlon,
+            np.arange(-cy, cy + 1) * dlat, dx_km, dy_km, float(lon[ix]), float(lat[iy]))
 
 
 def mean_field_point_autocorr(field, lon, lat, anchor_lon, anchor_lat,
-                              half_window_deg=3.0, thresh=1.0 / np.e):
+                              half_window_deg=3.0, min_frac=0.4, max_sep_deg=None):
     """
-    Windowed spatial autocorrelation curve of a static (time-mean) field at ONE anchor.
+    Windowed spatial autocorrelation curve of a static (time-mean) field at ONE anchor:
+    the zonal and meridional slices through the windowed 2-D autocovariance at the anchor.
 
-    The single-point analogue of mean_field_decorr: take the +/- half_window_deg box
-    around the nearest grid point to (anchor_lat, anchor_lon) and correlate the box
-    with itself shifted by each zonal / meridional lag, so the correlation-vs-separation
-    curve and its 1/e crossing show the decorrelation scale of the MEAN field at that
-    location. No time ensemble is used (contrast point_autocorr, which correlates the
-    anchor's time series with its neighbours').
+    This is the exact 1-D form of mean_field_point_corr_map (same _windowed_autocov core,
+    same window), so the curve and the 2-D map's zero crossings coincide by construction.
+    No time ensemble is used (contrast point_corr_map, the temporal one-point correlation).
 
-    field : (y, x) time-mean map, NaN where undefined.  Returns
-    dict(sep_x_deg, r_x, sep_y_deg, r_y, lon0, lat0, Lx_deg, Ly_deg, Lx_km, Ly_km),
-    matching point_autocorr's keys plus the 1/e crossings.
+    field : (y, x) time-mean map, NaN where undefined. `max_sep_deg` optionally crops the
+    returned separations. Returns dict(sep_x_deg, r_x, sep_y_deg, r_y, lon0, lat0).
     """
-    F = np.asarray(field, float)
-    lon = np.asarray(lon, float); lat = np.asarray(lat, float)
-    ix = int(np.argmin(np.abs(lon - anchor_lon)))
-    iy = int(np.argmin(np.abs(lat - anchor_lat)))
-    dlon = _grid_spacing_deg(lon); dlat = _grid_spacing_deg(lat)
-    wx = max(1, int(round(half_window_deg / dlon)))
-    wy = max(1, int(round(half_window_deg / dlat)))
-    b = F[max(0, iy - wy):iy + wy + 1, max(0, ix - wx):ix + wx + 1]
-    dx_km = dlon * _KM_PER_DEG * np.cos(np.radians(lat[iy]))
-    dy_km = dlat * _KM_PER_DEG
-
-    def _curve(nlag, axis):
-        r = np.full(nlag + 1, np.nan, np.float32)
-        for k in range(nlag + 1):
-            A = (b if k == 0 else b[:, :-k]) if axis == 1 else (b if k == 0 else b[:-k, :])
-            B = b[:, k:] if axis == 1 else b[k:, :]
-            A = A.ravel(); B = B.ravel()
-            m = np.isfinite(A) & np.isfinite(B)
-            if m.sum() >= 3 and A[m].std() > 0 and B[m].std() > 0:
-                r[k] = np.corrcoef(A[m], B[m])[0, 1]
-        return r
-
-    r_x = _curve(b.shape[1] - 1, 1)
-    r_y = _curve(b.shape[0] - 1, 0)
-    fx = float(_efold_lag(r_x[:, None, None], thresh)[0, 0])
-    fy = float(_efold_lag(r_y[:, None, None], thresh)[0, 0])
-    return dict(sep_x_deg=np.arange(len(r_x)) * dlon, r_x=r_x,
-                sep_y_deg=np.arange(len(r_y)) * dlat, r_y=r_y,
-                lon0=lon[ix], lat0=lat[iy],
-                Lx_deg=fx * dlon, Ly_deg=fy * dlat,
-                Lx_km=fx * dx_km, Ly_km=fy * dy_km)
-
-
-def fixed_lag_corr(cur, sep_deg):
-    """
-    Isotropic autocorrelation at a fixed separation (degrees), from autocorr_curves.
-
-    Averages the zonal and meridional correlation at the lag nearest `sep_deg`,
-    giving a dimensionless (y, x) map in [-1, 1] (NaN where undefined). The actual
-    separations used are returned so the caller can label the figure exactly.
-    """
-    dlon = cur['sep_x_deg'][1]
-    dlat = cur['sep_y_deg'][1]
-    kx = int(round(sep_deg / dlon))
-    ky = int(round(sep_deg / dlat))
-    r = 0.5 * (cur['cx'][kx] + cur['cy'][ky])
-    r = np.where(cur['valid'], r, np.nan).astype(np.float32)
-    return r, cur['sep_x_deg'][kx], cur['sep_y_deg'][ky]
-
-
-def band_autocorr(cur, lat, bands):
-    """
-    Latitude-band-averaged zonal & meridional autocorrelation curves.
-
-    For each (label, lo, hi) band the correlation curves are averaged over all points
-    with lo <= |lat| < hi. Returns {label: dict(sep_z, r_z, sep_m, r_m)} with
-    separations in degrees and dimensionless correlations.
-    """
-    alat = np.abs(np.asarray(lat, float))
-    out = {}
-    for label, lo, hi in bands:
-        rows = (alat >= lo) & (alat < hi)
-        if not rows.any():
-            continue
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore', RuntimeWarning)
-            r_z = np.nanmean(cur['cx'][:, rows, :], axis=(1, 2))
-            r_m = np.nanmean(cur['cy'][:, rows, :], axis=(1, 2))
-        out[label] = dict(sep_z=cur['sep_x_deg'], r_z=r_z,
-                          sep_m=cur['sep_y_deg'], r_m=r_m)
-    return out
-
-
-def decorrelation_scale(field, lon, lat, max_lag_km=600.0, thresh=1.0 / np.e):
-    """
-    Isotropic spatial decorrelation length (km) at each grid point of a field.
-
-    Thin wrapper over autocorr_curves + decorr_scale_from_curves; see those for the
-    method. Returns (L, Lx, Ly) as (y, x) float32 km arrays (NaN where undefined).
-    """
-    cur = autocorr_curves(field, lon, lat, max_lag_km=max_lag_km)
-    return decorr_scale_from_curves(cur, thresh=thresh)
-
-
-def point_autocorr(field, lon, lat, anchor_lon, anchor_lat, max_lag_km=600.0):
-    """
-    Zonal and meridional spatial autocorrelation function anchored at ONE point.
-
-    Same temporal-anomaly Pearson correlation as autocorr_curves (anomalies
-    normalized to unit time-variance, forward/backward lags averaged), but evaluated
-    only for the nearest grid point to (anchor_lat, anchor_lon) -- the correlation of
-    that point's time series with its neighbours along the row (zonal) and column
-    (meridional). No decorrelation cutoff is applied; this is the raw curve.
-
-    field : (time, y, x).  Returns dict(sep_x_deg, r_x, sep_y_deg, r_y, lon0, lat0).
-    """
-    f = np.asarray(field, np.float32)
-    lon = np.asarray(lon, float); lat = np.asarray(lat, float)
-    ix = int(np.argmin(np.abs(lon - anchor_lon)))
-    iy = int(np.argmin(np.abs(lat - anchor_lat)))
-
-    std = np.where(f.std(0) == 0, np.nan, f.std(0))
-    an = np.nan_to_num((f - f.mean(0)) / std)      # unit-variance anomalies
-    T = f.shape[0]
-    a0 = an[:, iy, ix]                              # anchor series (unit variance)
-
-    dlon = _grid_spacing_deg(lon); dlat = _grid_spacing_deg(lat)
-    dx_km = dlon * _KM_PER_DEG * np.cos(np.radians(lat[iy]))
-    dy_km = dlat * _KM_PER_DEG
-    nlag_x = int(np.ceil(max_lag_km / dx_km))
-    nlag_y = int(np.ceil(max_lag_km / dy_km))
-
-    def _curve(strip, i0, nlag):                   # strip: (time, n) along the axis
-        n = strip.shape[1]
-        r = np.full(nlag + 1, np.nan, np.float32)
-        for k in range(nlag + 1):
-            vals = []
-            if i0 + k < n:
-                vals.append(float((a0 * strip[:, i0 + k]).sum() / T))
-            if i0 - k >= 0:
-                vals.append(float((a0 * strip[:, i0 - k]).sum() / T))
-            if vals:
-                r[k] = np.mean(vals)
-        return r
-
-    r_x = _curve(an[:, iy, :], ix, nlag_x)         # along the anchor's latitude row
-    r_y = _curve(an[:, :, ix], iy, nlag_y)         # along the anchor's longitude column
-    return dict(sep_x_deg=np.arange(nlag_x + 1) * dlon, r_x=r_x,
-                sep_y_deg=np.arange(nlag_y + 1) * dlat, r_y=r_y,
-                lon0=float(lon[ix]), lat0=float(lat[iy]))
+    r, sep_x, sep_y, _, _, lon0, lat0 = _windowed_autocov(
+        field, lon, lat, anchor_lon, anchor_lat, half_window_deg, min_frac)
+    cy = (len(sep_y) - 1) // 2
+    cx = (len(sep_x) - 1) // 2
+    sep_x, r_x = sep_x[cx:], r[cy, cx:]                    # positive-lag slices (r is even)
+    sep_y, r_y = sep_y[cy:], r[cy:, cx]
+    if max_sep_deg is not None:                            # truncate the returned range
+        nxk = int(np.searchsorted(sep_x, max_sep_deg + 1e-9))
+        nyk = int(np.searchsorted(sep_y, max_sep_deg + 1e-9))
+        sep_x, r_x, sep_y, r_y = sep_x[:nxk], r_x[:nxk], sep_y[:nyk], r_y[:nyk]
+    return dict(sep_x_deg=sep_x, r_x=r_x, sep_y_deg=sep_y, r_y=r_y,
+                lon0=lon0, lat0=lat0)
 
 
 def point_corr_map(field, lon, lat, anchor_lon, anchor_lat):
@@ -1183,9 +905,9 @@ def point_corr_map(field, lon, lat, anchor_lon, anchor_lat):
     Two-dimensional spatial autocorrelation anchored at ONE point: the Pearson
     correlation of that point's temporal anomaly with every other grid point.
 
-    The 2-D generalization of point_autocorr -- instead of slicing along the anchor's
-    row and column it maps r(dlon, dlat), so the anisotropy AND the orientation/tilt
-    of the coherent structure are visible. r = 1 at the anchor by construction.
+    Instead of slicing along the anchor's row and column it maps r(dlon, dlat), so the
+    anisotropy AND the orientation/tilt of the coherent structure are visible. r = 1 at
+    the anchor by construction.
 
     field : (time, y, x).  Returns (r2d (y, x) float32, lon0, lat0).
     """
@@ -1202,6 +924,37 @@ def point_corr_map(field, lon, lat, anchor_lon, anchor_lat):
     r = np.tensordot(an[:, iy, ix], an, axes=(0, 0)) / T
     r = np.where(valid, r, np.nan).astype(np.float32)
     return r, float(lon[ix]), float(lat[iy])
+
+
+def mean_field_point_corr_map(field, lon, lat, anchor_lon, anchor_lat,
+                              half_window_deg=6.0, max_sep_deg=None, min_frac=0.4):
+    """
+    Two-dimensional spatial autocorrelation of a static (time-mean) field around ONE
+    anchor -- the full-plane generalization of mean_field_point_autocorr.
+
+    Inside a +/- half_window_deg box around the nearest grid point to (anchor_lat,
+    anchor_lon), the box's spatial anomaly (box minus its mean) is autocorrelated over
+    every lag vector (dlon, dlat) by FFT, giving r(dlon, dlat) = 1 at the anchor and
+    decaying outward. Unlike point_corr_map (which uses the TIME ensemble to show how the
+    fluctuations co-vary), this uses only the mean map's SPATIAL structure, so it shows
+    the anisotropy AND tilt of the MEAN field's coherent footprint -- the 2-D picture
+    of the mean-current coherence at that point, overlay-able with an array.
+
+    Returns (r2d (ny, nx) float32, lon1d, lat1d, lon0, lat0), where lon1d/lat1d are the
+    absolute lon/lat of each lag (anchor + separation) so the pattern plots on the map
+    centred at the anchor. r2d spans +/- min(half_window_deg, max_sep_deg) each way.
+    """
+    r, sep_x, sep_y, _, _, lon0, lat0 = _windowed_autocov(
+        field, lon, lat, anchor_lon, anchor_lat, half_window_deg, min_frac)
+    cy = (len(sep_y) - 1) // 2
+    cx = (len(sep_x) - 1) // 2
+    sep = half_window_deg if max_sep_deg is None else min(half_window_deg, max_sep_deg)
+    dlat = sep_y[1] - sep_y[0]; dlon = sep_x[1] - sep_x[0]
+    ky = min(cy, int(round(sep / dlat)))
+    kx = min(cx, int(round(sep / dlon)))
+    r = r[cy - ky:cy + ky + 1, cx - kx:cx + kx + 1]
+    return (r, lon0 + sep_x[cx - kx:cx + kx + 1],
+            lat0 + sep_y[cy - ky:cy + ky + 1], lon0, lat0)
 
 
 # ---------------------------------------------------------------------------

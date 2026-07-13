@@ -1,18 +1,23 @@
 """
-Mean-field spatial autocorrelation curve of the currents anchored at a single point
-(default 0°N, 140°W = 220°E) -- one panel per component, zonal (solid) and meridional
-(dashed) correlation vs separation, with the 1/e crossing marked.
+Spatial autocorrelation of the currents anchored at a single point (default 0°N, 140°W
+= 220°E), three complementary views per component (U, V, W):
 
-This is the single-point analogue of the domain_current_decorr maps: a windowed spatial
-autocorrelation of the TIME-MEAN field (osse_tools.mean_field_point_autocorr), so the
-decorrelation scale of the mean current at the anchor can be read directly. It replaces
-the earlier eddy-field version (temporal-anomaly correlation of the anchor's time series
-and its 2-D corr map), which is superseded by the mean-field decorrelation maps.
+  * domain_point_autocorr_{tag}      -- MEAN-field autocorrelation vs separation, 1-D
+    zonal (solid) / meridional (dashed) slices (mean_field_point_autocorr). Curve shape,
+    no 1/e marker; shows how far the mean current stays coherent at the anchor.
+  * domain_point_meanfield_corrmap_{tag} -- MEAN-field 2-D autocorrelation pattern
+    r(dlon,dlat) around the anchor (mean_field_point_corr_map): the full anisotropy/tilt
+    of the mean current's coherent footprint, overlay-able with a candidate array.
+  * domain_point_corr_map_{tag}      -- TEMPORAL one-point correlation map: the anchor's
+    velocity time series correlated with every grid point over the 3-month record
+    (point_corr_map). Shows what an array would SEE over the run -- the eddy/TIW footprint
+    (a different, generally shorter L than the mean-field one).
 
-Reads the time-mean fields straight from the run_domain_maps cache -- no model access --
-so it is essentially instant. Run run_domain_maps.py first to build that cache.
+The temporal map needs the full (time, y, x) field, so this script READS THE MODEL once
+(depth-mean series for U, V, W), unlike the cache-only mean-field diagnostics. It reuses
+RUN_DIR / ITERS / PERIODS from run_domain_maps.
 
-Writes domain/full_domain/velocities/domain_point_autocorr_{tag}_{d}m{suf}.png
+Writes into domain/full_domain/velocities/.
 
 Usage:
     python run_point_autocorr.py [depths_csv] [periods_csv]
@@ -21,56 +26,85 @@ Usage:
 
 import os
 import sys
-import pickle
 
-import numpy as np
 import matplotlib
 matplotlib.use('Agg')
 
 import osse_tools as ot
-from plotting_tools import plot_point_autocorr
-from run_domain_maps import (VARS, LABEL, PERIODS, OUTDIR, CACHE_DIR,
-                             DECORR_HALF_WIN_DEG)
+from plotting_tools import plot_point_autocorr, plot_anchor_corr_map
+from run_domain_maps import VARS, LABEL, PERIODS, OUTDIR, RUN_DIR, ITERS
 
 ANCHOR_LAT, ANCHOR_LON = 0.0, 220.0      # 0°N, 140°W
 ANCHOR_TAG = '0N140W'
+MAP_HALF_WIN_DEG = 6.0                    # ±deg sample box for the mean-field 2-D pattern
+MAP_MAX_SEP_DEG = 3.0                     # ±deg cropped display extent (box stays 6° for stats)
 
 
 def _lonlat(da):
-    """1-D lon/lat coordinate arrays of a (y, x) mean field on its own stagger."""
+    """1-D lon/lat coordinate arrays of a (y, x) field on its own stagger."""
     xdim, ydim = da.dims[-1], da.dims[-2]
     return da[xdim].values, da[ydim].values
-
-
-def _cache_path(d, pkey):                # shared run_domain_maps cache
-    return os.path.join(CACHE_DIR, f'domain_maps_{d}m_{pkey}.pkl')
 
 
 def main(depths, periods):
     outdir = os.path.join(OUTDIR, 'full_domain', 'velocities')
     os.makedirs(outdir, exist_ok=True)
 
+    # one model read: the temporal one-point map needs the time series (the mean-field
+    # views are derived from the time-mean of the same series, so no cache is needed).
+    ds = ot.load_model(RUN_DIR, ITERS).sel(time=slice('2012-10-11', None))
+    series = {v: ot.depth_mean_series(ds, v, depths) for v in VARS}
+    sys.stderr.write('  loaded depth-mean series U, V, W\n')
+
     for pkey in periods:
-        _, suf, plabel = PERIODS[pkey]
+        tsel, suf, plabel = PERIODS[pkey]
         for d in depths:
-            with open(_cache_path(d, pkey), 'rb') as f:
-                means = pickle.load(f)['means']
-            curves = []
+            S = {v: series[v][d].sel(time=tsel) for v in VARS}
+            means = {v: S[v].mean('time') for v in VARS}
+
+            curves, mf_map, t_map = [], [], []
+            lon0 = lat0 = None
             for v in VARS:
                 m = means[v]
                 lon, lat = _lonlat(m)
-                pac = ot.mean_field_point_autocorr(
+                # same ±MAP_HALF_WIN_DEG box + FFT autocovariance as the 2-D map below,
+                # so the curve's and map's zero crossings coincide by construction
+                curves.append((LABEL[v], ot.mean_field_point_autocorr(
                     m.values, lon, lat, ANCHOR_LON, ANCHOR_LAT,
-                    half_window_deg=DECORR_HALF_WIN_DEG)
-                curves.append((LABEL[v], pac))
-            lat0, lon0 = curves[0][1]['lat0'], curves[0][1]['lon0']
-            head = (f'TPOSE24 {plabel}, 0–{d} m — mean-field spatial autocorrelation '
-                    f'at {lat0:.2f}°N, {360 - lon0:.2f}°W '
-                    f'({DECORR_HALF_WIN_DEG:g}° window)')
+                    half_window_deg=MAP_HALF_WIN_DEG, max_sep_deg=MAP_HALF_WIN_DEG)))
+                r, mlon, mlat, lon0, lat0 = ot.mean_field_point_corr_map(
+                    m.values, lon, lat, ANCHOR_LON, ANCHOR_LAT,
+                    half_window_deg=MAP_HALF_WIN_DEG, max_sep_deg=MAP_MAX_SEP_DEG)
+                mf_map.append((r, mlon, mlat, LABEL[v]))
+                rt, _, _ = ot.point_corr_map(
+                    S[v].values, lon, lat, ANCHOR_LON, ANCHOR_LAT)
+                t_map.append((rt, lon, lat, LABEL[v]))
+
+            wdeg = 360 - lon0
+            base = f'TPOSE24 {plabel}, 0–{d} m'
+            loc = f'{lat0:.2f}°N, {wdeg:.2f}°W'
+
             plot_point_autocorr(
-                curves, suptitle=head, thresh=1.0 / np.e,
+                curves,
+                suptitle=(f'{base} — mean-field spatial autocorrelation at {loc} '
+                          f'(±{MAP_HALF_WIN_DEG:g}° sample box)'),
                 fname=os.path.join(
                     outdir, f'domain_point_autocorr_{ANCHOR_TAG}_{d}m{suf}.png'))
+            plot_anchor_corr_map(
+                mf_map, (lon0, lat0), ref_levels=(0.5,),
+                suptitle=f'{base} — MEAN-field 2-D autocorrelation footprint at {loc}',
+                fname=os.path.join(
+                    outdir, f'domain_point_meanfield_corrmap_{ANCHOR_TAG}_{d}m{suf}.png'))
+            # 0.5 & 0 contours on U, V; drop the 0 contour on W (clutter over its
+            # small-scale temporally-incoherent field)
+            t_ref = [(0.5,) if v == 'WVEL' else (0.5, 0.0) for v in VARS]
+            plot_anchor_corr_map(
+                t_map, (lon0, lat0),
+                suptitle=(f'{base} — temporal one-point correlation over the 3-month '
+                          f'record at {loc}'),
+                ref_levels=t_ref,
+                fname=os.path.join(
+                    outdir, f'domain_point_corr_map_{ANCHOR_TAG}_{d}m{suf}.png'))
             sys.stderr.write(f'PLOTTED {pkey} {d}m\n')
 
 

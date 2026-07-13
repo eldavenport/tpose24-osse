@@ -493,7 +493,7 @@ def _group_limits(panels, groups, diverging, pct):
 
     Limits come from the pooled finite values of every panel in the group: symmetric
     ±percentile for diverging fields, else the (low, high) percentiles. This lets e.g.
-    the U and V decorrelation panels share one scale so they're directly comparable.
+    the U and V gradient panels share one scale so they're directly comparable.
     """
     lims = {}
     for g in dict.fromkeys(groups):
@@ -600,75 +600,6 @@ def plot_domain_grid(panels, cbar_label, cmap, suptitle, fname,
     return fname
 
 
-def plot_autocorr_curves(per_var, suptitle, fname, thresh=None, xmax_deg=4.0,
-                         span_deg=None, ref_levels=()):
-    """
-    Latitude-band-averaged autocorrelation vs separation, one panel per variable.
-
-    Parameters
-    ----------
-    per_var : list of (var_title, bands_dict)
-        bands_dict maps a band label -> dict(sep_z, r_z, sep_m, r_m) from
-        osse_tools.band_autocorr (separations in degrees, correlations dimensionless).
-    thresh : float or None
-        If given, draw a horizontal reference line (e.g. 1/e) where the decorrelation
-        scale is read off.
-    xmax_deg : float
-        Right limit of the separation axis (degrees).
-    span_deg : (lo, hi) or None
-        Shade a candidate array-span window (degrees) — the range of array sizes over
-        which you'd read off the coherence.
-    ref_levels : iterable of float
-        Extra horizontal reference correlations to mark (e.g. 0.7 as a plane-fit-ok
-        guideline).
-
-    Zonal curves are solid, meridional dashed; each latitude band gets its own color.
-    """
-    n = len(per_var)
-    fig, axes = plt.subplots(1, n, figsize=(6.2 * n, 4.6), squeeze=False)
-    axf = axes.ravel()
-    band_labels = list(dict.fromkeys(
-        lbl for _, bands in per_var for lbl in bands))
-    colors = {lbl: c for lbl, c in zip(band_labels, plt.cm.viridis(
-        np.linspace(0, 0.85, max(len(band_labels), 1))))}
-    for ax, (title, bands) in zip(axf, per_var):
-        if span_deg is not None:
-            ax.axvspan(span_deg[0], span_deg[1], color='0.85', alpha=0.6, zorder=0)
-        for lbl, cur in bands.items():
-            ax.plot(cur['sep_z'], cur['r_z'], '-', color=colors[lbl], lw=1.8)
-            ax.plot(cur['sep_m'], cur['r_m'], '--', color=colors[lbl], lw=1.8)
-        if thresh is not None:
-            ax.axhline(thresh, color='0.4', lw=0.8, ls=':')
-            ax.text(xmax_deg, thresh, ' 1/e', va='center', ha='left',
-                    color='0.4', fontsize=9)
-        for lev in ref_levels:
-            ax.axhline(lev, color='0.55', lw=0.8, ls='--')
-            ax.text(xmax_deg, lev, f' {lev:g}', va='center', ha='left',
-                    color='0.55', fontsize=9)
-        ax.axhline(0, color='k', lw=0.5)
-        ax.set_xlim(0, xmax_deg)
-        ax.set_ylim(-0.25, 1.02)
-        ax.set_xlabel('separation (°)')
-        ax.set_ylabel('autocorrelation')
-        ax.set_title(title)
-    # legend: bands (color) + direction (linestyle) [+ array-span patch]
-    from matplotlib.lines import Line2D
-    from matplotlib.patches import Patch
-    handles = [Line2D([0], [0], color=colors[l], lw=1.8, label=l) for l in band_labels]
-    handles += [Line2D([0], [0], color='0.3', lw=1.8, ls='-', label='zonal'),
-                Line2D([0], [0], color='0.3', lw=1.8, ls='--', label='meridional')]
-    if span_deg is not None:
-        handles.append(Patch(facecolor='0.85', alpha=0.6,
-                             label=f'array span {span_deg[0]:g}–{span_deg[1]:g}°'))
-    fig.legend(handles=handles, loc='upper center', ncol=len(handles),
-               frameon=False, bbox_to_anchor=(0.5, 1.0))
-    fig.suptitle(suptitle, fontsize=13, y=1.10)
-    fig.tight_layout(rect=[0, 0, 1, 0.94])
-    fig.savefig(fname, dpi=150, bbox_inches='tight')
-    plt.close(fig)
-    return fname
-
-
 def plot_footprint_profiles(profiles, coord, rows, widths, shapes, colors,
                             xlabel, legend_title, fname, ref_x=None):
     """
@@ -718,18 +649,16 @@ def plot_footprint_profiles(profiles, coord, rows, widths, shapes, colors,
     return fname
 
 
-def plot_point_autocorr(per_var, suptitle, fname, xmax_deg=None, thresh=None):
+def plot_point_autocorr(per_var, suptitle, fname, xmax_deg=None):
     """
     Spatial autocorrelation function anchored at a single grid point, one panel per
     variable: zonal (solid) and meridional (dashed) correlation vs separation.
 
-    r=0 is marked so any negative lobe is readable. If `thresh` is given (e.g. 1/e),
-    a horizontal reference line is drawn at it and the zonal/meridional 1/e crossings
-    (pac['Lx_deg'], pac['Ly_deg']) are marked with vertical ticks -- used for the
-    mean-field decorrelation curves, where the crossing IS the quantity of interest.
+    r=0 is marked so any negative lobe is readable; no 1/e reference/crossing markers --
+    the curve shape is the point.
 
-    per_var : list of (var_title, dict) from osse_tools.mean_field_point_autocorr
-              (or point_autocorr): sep_x_deg, r_x, sep_y_deg, r_y [, Lx_deg, Ly_deg].
+    per_var : list of (var_title, dict) from osse_tools.mean_field_point_autocorr:
+              sep_x_deg, r_x, sep_y_deg, r_y.
     """
     from matplotlib.lines import Line2D
     n = len(per_var)
@@ -742,12 +671,6 @@ def plot_point_autocorr(per_var, suptitle, fname, xmax_deg=None, thresh=None):
         ax.plot(pac['sep_x_deg'], pac['r_x'], '-', color='#1b6ca8', lw=1.9)
         ax.plot(pac['sep_y_deg'], pac['r_y'], '--', color='#c0392b', lw=1.9)
         ax.axhline(0, color='k', lw=0.7)
-        if thresh is not None:
-            ax.axhline(thresh, color='0.5', lw=0.8, ls=':')
-            if np.isfinite(pac.get('Lx_deg', np.nan)):
-                ax.axvline(pac['Lx_deg'], color='#1b6ca8', lw=0.8, ls=':')
-            if np.isfinite(pac.get('Ly_deg', np.nan)):
-                ax.axvline(pac['Ly_deg'], color='#c0392b', lw=0.8, ls=':')
         xm = xmax_deg or max(pac['sep_x_deg'][-1], pac['sep_y_deg'][-1])
         ax.set_xlim(0, xm)
         ax.set_ylim(ylo, 1.02)
@@ -761,6 +684,66 @@ def plot_point_autocorr(per_var, suptitle, fname, xmax_deg=None, thresh=None):
                bbox_to_anchor=(0.5, 1.0))
     fig.suptitle(suptitle, fontsize=13, y=1.10)
     fig.tight_layout(rect=[0, 0, 1, 0.94])
+    fig.savefig(fname, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    return fname
+
+
+def plot_anchor_corr_map(panels, anchor_lonlat, suptitle, fname, ncols=3,
+                         ref_levels=(1.0 / np.e, 0.0)):
+    """
+    Grid of anchored 2-D spatial-correlation maps, one panel per variable.
+
+    Each panel is a filled correlation map on fixed diverging limits (-1..1, zero-centred
+    cmo.balance) so panels are directly comparable; the anchor is marked with a star and
+    `ref_levels` are drawn as labelled contours (r=0 dotted, positive levels solid) so the
+    coherent footprint -- and whether an array fits inside it -- is readable. Used for both
+    the temporal one-point map (osse_tools.point_corr_map) and the mean-field 2-D pattern
+    (mean_field_point_corr_map).
+
+    panels : list of (r2d, lon, lat, title) with lon/lat the map coords of the pattern.
+    anchor_lonlat : (lon0, lat0) marked on every panel.
+    ref_levels : one sequence of contour levels shared by all panels, OR a list of such
+        sequences (one per panel) for per-panel control (e.g. drop the 0 contour on W).
+    """
+    from matplotlib.colors import Normalize
+    import matplotlib.cm as mcm
+    lon0, lat0 = anchor_lonlat
+    n = len(panels)
+    # broadcast a shared level sequence, or take one sequence per panel
+    if not ref_levels:
+        per_panel = [()] * n
+    elif np.isscalar(ref_levels[0]):
+        per_panel = [tuple(ref_levels)] * n
+    else:
+        per_panel = [tuple(lv) for lv in ref_levels]
+    nrows = int(np.ceil(n / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(6.7 * ncols, 4.8 * nrows),
+                             squeeze=False)
+    axf = axes.ravel()
+    levels = np.linspace(-1, 1, N_CONTOUR_LEVELS)
+    for ax, (r, xx, yy, title), lv in zip(axf, panels, per_panel):
+        ax.contourf(xx, yy, r, levels=levels, cmap=cmo.balance, extend='neither')
+        if lv:
+            slv = sorted(lv)
+            ax.contour(xx, yy, r, levels=slv, colors='k', linewidths=0.8,
+                       linestyles=['-' if v != 0 else ':' for v in slv])
+        ax.plot(lon0, lat0, marker='*', ms=15, mfc='yellow', mec='k', mew=0.8)
+        ax.axhline(0, color='k', lw=0.5, ls=':')
+        sm = mcm.ScalarMappable(norm=Normalize(-1, 1), cmap=cmo.balance)
+        plt.colorbar(sm, ax=ax, shrink=0.8, pad=0.03, label='correlation',
+                     ticks=mticker.MaxNLocator(nbins=6, symmetric=True))
+        ax.set_xlabel('Longitude (°E)')
+        ax.set_ylabel('Latitude (°N)')
+        ax.set_title(title)
+    for ax in axf[n:]:
+        ax.axis('off')
+    h = 4.8 * nrows
+    if suptitle:
+        fig.tight_layout(rect=[0, 0, 1, 1 - 0.45 / h])
+        fig.suptitle(suptitle, fontsize=13, y=1 - 0.10 / h)
+    else:
+        fig.tight_layout()
     fig.savefig(fname, dpi=150, bbox_inches='tight')
     plt.close(fig)
     return fname
