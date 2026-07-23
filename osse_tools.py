@@ -697,39 +697,276 @@ def w_skill_by_depth(w_est, w_model):
     ))
 
 
-def vertical_eddy_flux(w, tracers, mean_dim='time'):
+# Reference seawater density and heat capacity for converting a temperature flux
+# w'T' (deg C m/s) into a heat flux rho0*cp*w'T' (W/m^2). HFLUX = W/m^2 per deg C m/s.
+RHO0 = 1025.0                                    # kg/m^3
+CP   = 3994.0                                    # J/(kg deg C)
+HFLUX = RHO0 * CP                                # ~4.09e6 J/(m^3 deg C)
+
+
+def vertical_eddy_flux(w, tracers, mean_dim='time', reduce=True):
     """
-    Vertical eddy flux <w' phi'> over mean_dim for each tracer present (U,V,T,S).
+    Vertical eddy flux w' phi' over mean_dim for each tracer present (U,V,T,S).
 
     w and tracers must share dims and depth grid; primes are deviations from the
     mean over mean_dim. Returns a Dataset with wU, wV, wT, wS as available.
+
+    reduce : bool
+        If True (default) return the time-mean eddy flux <w' phi'>. If False,
+        return the *instantaneous* eddy-flux series w'(t) phi'(t) (mean_dim kept),
+        whose mean over mean_dim is the eddy flux -- needed for variability, PDFs,
+        and the flux-error decomposition.
     """
     wp = w - w.mean(mean_dim)
     out = {}
     for v in ('U', 'V', 'T', 'S'):
         if v in tracers:
-            out['w' + v] = (wp * (tracers[v] - tracers[v].mean(mean_dim))).mean(mean_dim)
+            prod = wp * (tracers[v] - tracers[v].mean(mean_dim))
+            out['w' + v] = prod.mean(mean_dim) if reduce else prod
     return xr.Dataset(out)
 
 
-def array_vertical_flux(w_est, fields, mean_dim='time'):
+def array_vertical_flux(w_est, fields, mean_dim='time', reduce=True):
     """
     Array-estimated vertical eddy flux: plane-fit w_est paired with the array-mean
     tracers. w_est (on interfaces) is interpolated to the tracer obs depths.
 
-    Returns Dataset of flux profiles (obs_depth).
+    Returns Dataset of flux profiles (obs_depth), or instantaneous series
+    (time, obs_depth) when reduce=False.
     """
     z = fields.obs_depth.values
     w = w_est.interp(depth=xr.DataArray(z, dims='obs_depth', coords={'obs_depth': z}))
-    return vertical_eddy_flux(w, fields.mean('glider'), mean_dim)
+    return vertical_eddy_flux(w, fields.mean('glider'), mean_dim, reduce=reduce)
 
 
-def model_vertical_flux(region, mean_dim='time'):
+def model_vertical_flux(region, mean_dim='time', reduce=True):
     """
     True total vertical eddy flux profiles <w' phi'> over the hull, from a
     model_region that includes WVEL: full eddy flux averaged over hull points and time.
+
+    reduce=False returns the hull-point-mean instantaneous eddy-flux series
+    (time, obs_depth) instead of the time-mean profile.
     """
-    return vertical_eddy_flux(region.W, region, mean_dim).mean('point')
+    return vertical_eddy_flux(region.W, region, mean_dim, reduce=reduce).mean('point')
+
+
+def sample_model_heat_flux(ds, positions, max_depth=70, dz_obs=2, min_depth=0):
+    """
+    True hull-area vertical temperature flux and its components, at obs midpoints.
+
+    Unlike model_region (which horizontally interpolates every field to the tracer
+    grid — expensive over a long record), this selects the NATIVE model grid points
+    inside the array hull and interpolates only in depth, mirroring sample_model_w.
+    WVEL (interfaces Zl) and THETA (centers Z) are both interpolated to the obs
+    midpoints so w and T are co-located, then combined per point and averaged over
+    the hull.
+
+    Two physically meaningful quantities are returned (the total product <w T> is
+    reference-dependent on T's zero point, so it is deliberately NOT returned):
+
+      * eddy vertical heat flux  w'T'  (a proper flux, deg C m/s -> W/m^2 via HFLUX);
+      * vertical advective heating  w dT/dz  (a heating rate, deg C/s -> deg C/day
+        via *86400; integrates vertically to a flux, rho0 cp int w dT/dz dz -> W/m^2).
+
+    Returns
+    -------
+    xr.Dataset, dims (time, obs_depth)
+        eddy_flux   <w' T'>_hull        eddy heat flux    (deg C m/s; *HFLUX -> W/m^2)
+        adv_total   <w dT/dz>_hull      total advective heating   (deg C/s)
+        adv_eddy    <w' (dT/dz)'>_hull  eddy advective heating    (deg C/s)
+        wbar        <w>_hull            hull-mean w
+        Tbar        <T>_hull            hull-mean T
+    Primes = deviations from the time mean.
+    """
+    obs_z = _obs_z(max_depth, dz_obs, min_depth)
+    # Restrict to the hull bounding box FIRST, then interpolate in depth: interpolating
+    # the global field before selecting would process the whole domain (slow, huge RAM).
+    lon0, lon1, lat0, lat1 = _hull_bbox(positions)
+    W = ds.WVEL.sel(XC=slice(lon0, lon1), YC=slice(lat0, lat1)).interp(Zl=obs_z)
+    T = ds.THETA.sel(XC=slice(lon0, lon1), YC=slice(lat0, lat1)).interp(Z=obs_z)
+    mask = xr.DataArray(
+        _convex_hull_mask(W.XC.values, W.YC.values, positions),
+        dims=('YC', 'XC'), coords={'YC': W.YC.values, 'XC': W.XC.values})
+    W = W.where(mask); T = T.where(mask)
+
+    # vertical temperature gradient dT/dz on the obs axis (obs_depth is metres,
+    # negative downward, so differentiate gives dT/dz directly).
+    dTdz = T.differentiate('obs_depth')
+
+    Wp = W - W.mean('time')
+    Tp = T - T.mean('time')
+    dTdzp = dTdz - dTdz.mean('time')
+    hull = ['XC', 'YC']
+    return xr.Dataset(dict(
+        eddy_flux=(Wp * Tp).mean(hull),
+        adv_total=(W * dTdz).mean(hull),
+        adv_eddy=(Wp * dTdzp).mean(hull),
+        wbar=W.mean(hull),
+        Tbar=T.mean(hull),
+    )).transpose('time', 'obs_depth').compute()
+
+
+def flux_total_and_eddy(w, T, mean_dim='time'):
+    """
+    Decompose a vertical temperature flux w*T into its total, mean-advection, and
+    eddy parts along mean_dim (primes = deviations from the mean over mean_dim):
+
+        total   = w * T                       (instantaneous, mean_dim kept)
+        eddy    = w' * T'                     (instantaneous, mean_dim kept)
+        mean_adv = <w> * <T>                  (profile, mean_dim collapsed)
+        eddy_mean = <w' T'>                   (profile, mean_dim collapsed)
+
+    w and T must share dims/grid (both at obs midpoints). Returns a Dataset with
+    total, eddy, mean_adv, eddy_mean. <total> = mean_adv + eddy_mean by construction.
+    """
+    wp = w - w.mean(mean_dim)
+    Tp = T - T.mean(mean_dim)
+    total = w * T
+    eddy = wp * Tp
+    return xr.Dataset(dict(
+        total=total,
+        eddy=eddy,
+        mean_adv=w.mean(mean_dim) * T.mean(mean_dim),
+        eddy_mean=eddy.mean(mean_dim),
+    ))
+
+
+def advective_heating(w, T, mean_dim='time'):
+    """
+    Vertical advective heating  w * dT/dz  from co-located w and T (both at obs
+    midpoints, depth axis in metres). Unlike a flux this is a heating RATE (deg C/s;
+    *86400 -> deg C/day) but integrates vertically to a flux (rho0 cp int w dT/dz dz).
+    Primes = deviations from the mean over mean_dim.
+
+        total   = w * dT/dz                    (instantaneous, mean_dim kept)
+        eddy    = w' * (dT/dz)'                (instantaneous, mean_dim kept)
+        mean_adv = <w> * <dT/dz>               (profile, mean_dim collapsed)
+        eddy_mean = <w' (dT/dz)'>              (profile, mean_dim collapsed)
+
+    Returns a Dataset with total, eddy, mean_adv, eddy_mean.
+    <total> = mean_adv + eddy_mean by construction.
+    """
+    dTdz = T.differentiate('depth') if 'depth' in T.dims else T.differentiate('obs_depth')
+    wp = w - w.mean(mean_dim)
+    gp = dTdz - dTdz.mean(mean_dim)
+    total = w * dTdz
+    eddy = wp * gp
+    return xr.Dataset(dict(
+        total=total,
+        eddy=eddy,
+        mean_adv=w.mean(mean_dim) * dTdz.mean(mean_dim),
+        eddy_mean=eddy.mean(mean_dim),
+    ))
+
+
+def heat_flux_skill_by_depth(F_est, F_true):
+    """
+    Depth-resolved skill of an estimated vertical flux series against a truth series
+    (mirrors w_skill_by_depth). F_est, F_true are instantaneous flux series with
+    dims (time, depth) -- e.g. the 'eddy' or 'total' series from flux_total_and_eddy.
+
+    Returns
+    -------
+    xr.Dataset, dim (depth)
+        mean_est, mean_true       time-mean flux (est, true)
+        mean_bias                 mean(F_est - F_true)
+        rms                       rms of (F_est - F_true) over time
+        corr                      correlation of the two series over time
+        est_std, true_std         std over time (the flux variability)
+        std_ratio                 est_std / true_std
+        norm_rms                  rms / true_std
+        mean_est_se, mean_true_se, mean_bias_se
+                                  autocorr-aware SEs of the time means (95% CI = +/-1.96*se)
+        n_eff, tau                effective sample size / autocorr time of the difference
+    """
+    bias     = F_est - F_true
+    rms      = np.sqrt((bias ** 2).mean('time'))
+    est_std  = F_est.std('time')
+    true_std = F_true.std('time')
+    ea = F_est  - F_est.mean('time')
+    ta = F_true - F_true.mean('time')
+    corr = (ea * ta).mean('time') / (est_std * true_std)
+
+    depth = F_est['depth']
+    nd = depth.size
+    est_se = np.full(nd, np.nan); true_se = np.full(nd, np.nan)
+    bias_se = np.full(nd, np.nan); neff = np.full(nd, np.nan); tau = np.full(nd, np.nan)
+    for k in range(nd):
+        _, est_se[k], _, _             = mean_se_autocorr(F_est.isel(depth=k).values)
+        _, true_se[k], _, _            = mean_se_autocorr(F_true.isel(depth=k).values)
+        _, bias_se[k], neff[k], tau[k] = mean_se_autocorr(bias.isel(depth=k).values)
+    _da = lambda a: xr.DataArray(a, dims='depth', coords={'depth': depth})
+    return xr.Dataset(dict(
+        mean_est=F_est.mean('time'),
+        mean_true=F_true.mean('time'),
+        mean_bias=bias.mean('time'),
+        rms=rms,
+        corr=corr,
+        est_std=est_std,
+        true_std=true_std,
+        std_ratio=est_std / true_std,
+        norm_rms=rms / true_std,
+        mean_est_se=_da(est_se),
+        mean_true_se=_da(true_se),
+        mean_bias_se=_da(bias_se),
+        n_eff=_da(neff),
+        tau=_da(tau),
+    ))
+
+
+def flux_error_decomposition(w_est, T_glider, w_hull, T_hull, F_hull_eddy,
+                             mean_dim='time'):
+    """
+    Attribute the eddy vertical-heat-flux error to its sources at each depth.
+
+    All inputs are (time, depth) series co-located at obs midpoints:
+      w_est     plane-fit w (interpolated to midpoints)
+      T_glider  array-mean glider temperature
+      w_hull    hull-mean model w
+      T_hull    hull-mean model temperature
+      F_hull_eddy  full hull-mean instantaneous eddy flux <w'T'>_hull(t) (from
+                   model_vertical_flux(region, reduce=False)), i.e. includes
+                   sub-cell covariance the area means miss.
+
+    With primes = deviations from the mean over mean_dim,
+      dw' = w_est' - w_hull',   dT' = T_glider' - T_hull',
+    the estimated-minus-true eddy mean flux splits as
+      <w'_est T'_est> - <w'T'>_hull =
+          <dw' T_hull'>   (w-error rectified against true T)
+        + <w_hull' dT'>   (T sampling error)
+        + <dw' dT'>       (cross term)
+        - (<w'T'>_hull - <w_hull' T_hull'>)   (unresolved sub-cell covariance)
+
+    Returns
+    -------
+    xr.Dataset, dim (depth)
+        est_eddy, true_eddy   mean eddy flux (array estimate; full hull truth)
+        total_error           est_eddy - true_eddy
+        w_term, t_term, cross_term, unresolved   the four contributions above
+                              (they sum to total_error)
+    """
+    def _p(x):
+        return x - x.mean(mean_dim)
+    dw = _p(w_est) - _p(w_hull)
+    dT = _p(T_glider) - _p(T_hull)
+
+    est_eddy  = (_p(w_est) * _p(T_glider)).mean(mean_dim)
+    area_eddy = (_p(w_hull) * _p(T_hull)).mean(mean_dim)
+    true_eddy = F_hull_eddy.mean(mean_dim)
+
+    w_term    = (dw * _p(T_hull)).mean(mean_dim)
+    t_term    = (_p(w_hull) * dT).mean(mean_dim)
+    cross     = (dw * dT).mean(mean_dim)
+    unresolved = -(true_eddy - area_eddy)        # -(hull - area-mean product)
+    return xr.Dataset(dict(
+        est_eddy=est_eddy,
+        true_eddy=true_eddy,
+        total_error=est_eddy - true_eddy,
+        w_term=w_term,
+        t_term=t_term,
+        cross_term=cross,
+        unresolved=unresolved,
+    ))
 
 
 def _js_distance(sa, sb, edges):
@@ -836,70 +1073,6 @@ def gradient_magnitude(field, lon, lat):
     return np.hypot(fx, fy)
 
 
-def _windowed_autocov(field, lon, lat, anchor_lon, anchor_lat,
-                      half_window_deg, min_frac=0.4):
-    """
-    Windowed 2-D spatial autocovariance (normalised so r(0,0)=1) of a static field around
-    an anchor, by FFT. Shared core of mean_field_point_autocorr (its axis slices) and
-    mean_field_point_corr_map (the 2-D pattern), so those two coincide by construction.
-
-    Uses ONE window mean and ONE variance (the proper, positive-definite / spectrally
-    consistent autocorrelation estimator) rather than re-demeaning each lag. Returns
-    r_full ((2*ny-1, 2*nx-1) float32, NaN where fewer than min_frac of the box overlaps),
-    sep_x_deg, sep_y_deg (full symmetric lag axes in degrees), dx_km, dy_km, lon0, lat0.
-    """
-    from scipy.signal import fftconvolve
-    F = np.asarray(field, float)
-    lon = np.asarray(lon, float); lat = np.asarray(lat, float)
-    ix = int(np.argmin(np.abs(lon - anchor_lon)))
-    iy = int(np.argmin(np.abs(lat - anchor_lat)))
-    dlon = _grid_spacing_deg(lon); dlat = _grid_spacing_deg(lat)
-    wx = max(1, int(round(half_window_deg / dlon)))
-    wy = max(1, int(round(half_window_deg / dlat)))
-    box = F[max(0, iy - wy):iy + wy + 1, max(0, ix - wx):ix + wx + 1]
-    ny, nx = box.shape
-    mask = np.isfinite(box).astype(float)
-    B = np.where(mask > 0, box - np.nanmean(box), 0.0)     # mean-removed anomaly; land->0
-    num = fftconvolve(B, B[::-1, ::-1], mode='full')       # autocovariance (single mean)
-    cnt = fftconvolve(mask, mask[::-1, ::-1], mode='full')  # per-lag overlap counts
-    cy, cx = ny - 1, nx - 1                                 # zero-lag at the centre
-    with np.errstate(divide='ignore', invalid='ignore'):
-        acov = num / cnt
-        r = acov / acov[cy, cx]                            # normalise so r(0,0)=1
-    r[cnt < min_frac * (ny * nx)] = np.nan
-    dx_km = dlon * _KM_PER_DEG * np.cos(np.radians(lat[iy]))
-    dy_km = dlat * _KM_PER_DEG
-    return (r.astype(np.float32), np.arange(-cx, cx + 1) * dlon,
-            np.arange(-cy, cy + 1) * dlat, dx_km, dy_km, float(lon[ix]), float(lat[iy]))
-
-
-def mean_field_point_autocorr(field, lon, lat, anchor_lon, anchor_lat,
-                              half_window_deg=3.0, min_frac=0.4, max_sep_deg=None):
-    """
-    Windowed spatial autocorrelation curve of a static (time-mean) field at ONE anchor:
-    the zonal and meridional slices through the windowed 2-D autocovariance at the anchor.
-
-    This is the exact 1-D form of mean_field_point_corr_map (same _windowed_autocov core,
-    same window), so the curve and the 2-D map's zero crossings coincide by construction.
-    No time ensemble is used (contrast point_corr_map, the temporal one-point correlation).
-
-    field : (y, x) time-mean map, NaN where undefined. `max_sep_deg` optionally crops the
-    returned separations. Returns dict(sep_x_deg, r_x, sep_y_deg, r_y, lon0, lat0).
-    """
-    r, sep_x, sep_y, _, _, lon0, lat0 = _windowed_autocov(
-        field, lon, lat, anchor_lon, anchor_lat, half_window_deg, min_frac)
-    cy = (len(sep_y) - 1) // 2
-    cx = (len(sep_x) - 1) // 2
-    sep_x, r_x = sep_x[cx:], r[cy, cx:]                    # positive-lag slices (r is even)
-    sep_y, r_y = sep_y[cy:], r[cy:, cx]
-    if max_sep_deg is not None:                            # truncate the returned range
-        nxk = int(np.searchsorted(sep_x, max_sep_deg + 1e-9))
-        nyk = int(np.searchsorted(sep_y, max_sep_deg + 1e-9))
-        sep_x, r_x, sep_y, r_y = sep_x[:nxk], r_x[:nxk], sep_y[:nyk], r_y[:nyk]
-    return dict(sep_x_deg=sep_x, r_x=r_x, sep_y_deg=sep_y, r_y=r_y,
-                lon0=lon0, lat0=lat0)
-
-
 def point_corr_map(field, lon, lat, anchor_lon, anchor_lat):
     """
     Two-dimensional spatial autocorrelation anchored at ONE point: the Pearson
@@ -926,35 +1099,130 @@ def point_corr_map(field, lon, lat, anchor_lon, anchor_lat):
     return r, float(lon[ix]), float(lat[iy])
 
 
-def mean_field_point_corr_map(field, lon, lat, anchor_lon, anchor_lat,
-                              half_window_deg=6.0, max_sep_deg=None, min_frac=0.4):
+def depth_level_series(ds, var, depths):
     """
-    Two-dimensional spatial autocorrelation of a static (time-mean) field around ONE
-    anchor -- the full-plane generalization of mean_field_point_autocorr.
+    One MITgcm velocity diagnostic interpolated to fixed depth LEVEL(s), keeping time.
 
-    Inside a +/- half_window_deg box around the nearest grid point to (anchor_lat,
-    anchor_lon), the box's spatial anomaly (box minus its mean) is autocorrelated over
-    every lag vector (dlon, dlat) by FFT, giving r(dlon, dlat) = 1 at the anchor and
-    decaying outward. Unlike point_corr_map (which uses the TIME ensemble to show how the
-    fluctuations co-vary), this uses only the mean map's SPATIAL structure, so it shows
-    the anisotropy AND tilt of the MEAN field's coherent footprint -- the 2-D picture
-    of the mean-current coherence at that point, overlay-able with an array.
+    Companion to depth_mean_series: instead of a 0..d average this returns the field AT
+    each requested depth (linear in Z), so a temporal one-point map can be built on a
+    single level rather than a depth mean. WVEL uses the Zl interface coordinate, U/V the
+    Z centers.
 
-    Returns (r2d (ny, nx) float32, lon1d, lat1d, lon0, lat0), where lon1d/lat1d are the
-    absolute lon/lat of each lag (anchor + separation) so the pattern plots on the map
-    centred at the anchor. r2d spans +/- min(half_window_deg, max_sep_deg) each way.
+    Returns dict {depth: xr.DataArray(time, y, x) float32} on the variable's own grid.
     """
-    r, sep_x, sep_y, _, _, lon0, lat0 = _windowed_autocov(
-        field, lon, lat, anchor_lon, anchor_lat, half_window_deg, min_frac)
-    cy = (len(sep_y) - 1) // 2
-    cx = (len(sep_x) - 1) // 2
-    sep = half_window_deg if max_sep_deg is None else min(half_window_deg, max_sep_deg)
-    dlat = sep_y[1] - sep_y[0]; dlon = sep_x[1] - sep_x[0]
-    ky = min(cy, int(round(sep / dlat)))
-    kx = min(cx, int(round(sep / dlon)))
-    r = r[cy - ky:cy + ky + 1, cx - kx:cx + kx + 1]
-    return (r, lon0 + sep_x[cx - kx:cx + kx + 1],
-            lat0 + sep_y[cy - ky:cy + ky + 1], lon0, lat0)
+    zc = _ZCOORD.get(var, 'Z')
+    da = ds[var]
+    return {d: da.interp({zc: -float(d)}).astype('float32') for d in depths}
+
+
+def transect_plane_series(ds, var, max_depth, lon=None, lat=None):
+    """
+    Depth-vs-(latitude or longitude) plane time series of one velocity diagnostic.
+
+    Pass `lon` for a depth-latitude plane (a meridional section at that longitude) or
+    `lat` for a depth-longitude plane (a zonal section at that latitude), keeping the full
+    water column to `max_depth` and every time. Native Z levels; the horizontal line is
+    interpolated on the variable's own staggered grid.
+
+    Returns (arr (time, z, c) float32, z (neg m, float), coord (deg, float), name),
+    where name is 'lat' or 'lon' naming the plane's horizontal axis.
+    """
+    zc = _ZCOORD.get(var, 'Z')
+    gx, gy = _GRID[var]
+    da = ds[var]
+    kkeep = int((da[zc].values >= -max_depth - 1e-6).sum())
+    da = da.isel({zc: slice(0, kkeep)})
+    if lon is not None:
+        da = da.interp({gx: float(lon)})
+        coord, name = da[gy].values, 'lat'
+    else:
+        da = da.interp({gy: float(lat)})
+        coord, name = da[gx].values, 'lon'
+    da = da.transpose('time', zc, ...)
+    return (da.values.astype('float32'), da[zc].values.astype(float),
+            np.asarray(coord, float), name)
+
+
+def _fft_autocov(anom, n_time, axis=0):
+    """Single-mean FFT autocovariance along `axis` of an already-demeaned array."""
+    n2 = 1
+    while n2 < 2 * n_time:
+        n2 *= 2
+    F = np.fft.rfft(anom, n=n2, axis=axis)
+    return np.fft.irfft(F * np.conj(F), n=n2, axis=axis)
+
+
+def efolding_timescale_map(field, dt_days, max_lag_days=40.0, yblock=48):
+    """
+    Per-grid-point temporal e-folding decorrelation scale of a time-series field.
+
+    At every (y, x) point the normalized temporal autocovariance r(lag) is formed (single-
+    mean FFT estimator) and the first lag at which r drops to 1/e is returned, linearly
+    interpolated between records, in DAYS. Points that never decorrelate within
+    max_lag_days are NaN. Processed in y-blocks to bound memory.
+
+    field : (time, y, x).  dt_days : record spacing (days).  Returns (y, x) float32 (days).
+    """
+    f = np.asarray(field, np.float32)
+    T, ny, nx = f.shape
+    max_lag = min(T - 1, int(round(max_lag_days / dt_days)))
+    thr = 1.0 / np.e
+    out = np.full((ny, nx), np.nan, np.float32)
+    for y0 in range(0, ny, yblock):
+        blk = f[:, y0:y0 + yblock, :]
+        valid = np.isfinite(blk).all(0)
+        b = np.where(np.isfinite(blk), blk - np.nanmean(blk, axis=0), 0.0)
+        acov = _fft_autocov(b, T)[:max_lag + 1]              # (lag, yb, x)
+        with np.errstate(invalid='ignore', divide='ignore'):
+            r = acov / acov[0]
+        below = r < thr
+        crossed = below.any(0)
+        k = np.clip(np.argmax(below, axis=0), 1, max_lag)    # first lag below thr
+        r0 = np.take_along_axis(r, (k - 1)[None], 0)[0]
+        r1 = np.take_along_axis(r, k[None], 0)[0]
+        with np.errstate(invalid='ignore', divide='ignore'):
+            frac = np.clip((r0 - thr) / (r0 - r1), 0.0, 1.0)  # interp within [k-1, k]
+        tau = (k - 1 + frac) * dt_days
+        out[y0:y0 + yblock, :] = np.where(crossed & valid, tau, np.nan)
+    return out
+
+
+def point_temporal_acf(series, dt_days, max_lag_days=40.0):
+    """
+    Normalized temporal autocorrelation r(lag) of a single 1-D time series.
+
+    Single-mean FFT estimator (r(0)=1). Returns (lags_days, r) out to max_lag_days.
+    """
+    s = np.asarray(series, float)
+    T = s.size
+    b = np.nan_to_num(s - np.nanmean(s))
+    acov = _fft_autocov(b, T)[:T]
+    r = acov / acov[0]
+    k = min(T - 1, int(round(max_lag_days / dt_days)))
+    return np.arange(k + 1) * dt_days, r[:k + 1].astype(np.float32)
+
+
+def first_efold(coord, r, center):
+    """
+    Distance from `center` to the first 1/e crossing of an autocorrelation curve r(coord),
+    searched outward on each side and averaged (a one-sided NaN is ignored). `coord` is a
+    1-D monotonic axis (deg or days). Used to size the decorrelation scales that annotate
+    the hovmollers and cut summaries. Returns NaN if it never crosses.
+    """
+    coord = np.asarray(coord, float); r = np.asarray(r, float)
+    thr = 1.0 / np.e
+    i0 = int(np.argmin(np.abs(coord - center)))
+
+    def side(idxs):
+        for a, b in zip(idxs[:-1], idxs[1:]):
+            if np.isfinite(r[a]) and np.isfinite(r[b]) and r[b] < thr <= r[a]:
+                f = (r[a] - thr) / (r[a] - r[b])
+                return abs(coord[a] + f * (coord[b] - coord[a]) - center)
+        return np.nan
+
+    vals = [v for v in (side(range(i0, -1, -1)), side(range(i0, len(coord))))
+            if np.isfinite(v)]
+    return float(np.mean(vals)) if vals else np.nan
 
 
 # ---------------------------------------------------------------------------
@@ -1119,6 +1387,54 @@ def filled_planefit_divergence(U, V, lon, lat, shape, width_deg, height_deg):
     du_dx = du_di / (dlon * cos * deg_to_m)
     dv_dy = dv_dj / (dlat * deg_to_m)
     return du_dx + dv_dy
+
+
+def planefit_gradient_scalars(U, V, lon, lat, positions):
+    """
+    The single du/dx and dv/dy an array's plane fit reports for a colocated mean
+    velocity field, i.e. the constant slopes compute_w_planefit integrates.
+
+    U, V are (nlat, nlon) on the tracer grid (lon, lat) — e.g. from colocate_uv on
+    a time/depth-mean field. The field is sampled at each glider position and a plane
+    u = a + b*x + c*y is least-squares fit over the array (positions projected to
+    metres about their centroid, cos(lat) zonal scaling), so du/dx = b, dv/dy = c.
+    Because the fit and time/depth-averaging are linear, these equal the time/depth
+    means of compute_w_planefit's per-snapshot slopes.
+
+    Returns (du_dx, dv_dy) floats [1/s]. Matches _planefit_slope_weights /
+    compute_w_planefit's projection so the estimate lines up with the w workflow.
+    """
+    from scipy.interpolate import RegularGridInterpolator
+    lats = np.array([p[0] for p in positions], float)
+    lons = np.array([p[1] for p in positions], float)
+    rgiU = RegularGridInterpolator((lat, lon), U, bounds_error=False, fill_value=np.nan)
+    rgiV = RegularGridInterpolator((lat, lon), V, bounds_error=False, fill_value=np.nan)
+    pts = np.column_stack([lats, lons])
+    us, vs = rgiU(pts), rgiV(pts)
+    offs = np.column_stack([lats - lats.mean(), lons - lons.mean()])   # (dlat, dlon)
+    wx, wy = _planefit_slope_weights(offs, float(lats.mean()))
+    return float(wx @ us), float(wy @ vs)
+
+
+def gradient_map_fields(meanU, meanV):
+    """
+    True horizontal-gradient maps of a mean velocity field for the array comparison:
+    du/dx, dv/dy and their sum (horizontal divergence), on the common tracer grid.
+
+    meanU (YC, XG) and meanV (YG, XC) are time/depth-mean components (e.g. from a
+    run_gradient_maps cache). They are co-located to the tracer grid (colocate_uv),
+    then differentiated with centred differences (gradient_components). This is the
+    spatially varying truth the array's single plane-fit slope (planefit_gradient_scalars)
+    approximates.
+
+    Returns dict with du_dx, dv_dy, div (each (nlat, nlon)), plus lon, lat (1-D), and
+    U, V (the co-located mean components, for sampling the plane-fit estimate).
+    """
+    U, V, lon, lat = colocate_uv(meanU, meanV)
+    du_dx = gradient_components(U, lon, lat)[0]
+    dv_dy = gradient_components(V, lon, lat)[1]
+    return dict(du_dx=du_dx, dv_dy=dv_dy, div=du_dx + dv_dy,
+                lon=lon, lat=lat, U=U, V=V)
 
 
 def footprint_w_error(means, shape, width_deg, height_deg, depth_m, tier=2):

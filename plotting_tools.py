@@ -600,6 +600,192 @@ def plot_domain_grid(panels, cbar_label, cmap, suptitle, fname,
     return fname
 
 
+N_GRAD_LEVELS = 101   # filled-contour levels for the gradient-comparison maps
+
+
+def _fold_offset_into_label(fig, cbar, base_label):
+    """Fold a colorbar's scientific-notation offset (e.g. '1e-6') into its label so
+    the floating offset text can't overlap neighbouring panels. Mirrors plot_domain_grid."""
+    fig.canvas.draw()
+    off = cbar.ax.yaxis.get_major_formatter().get_offset()
+    if not off:
+        cbar.set_label(base_label)
+        return
+    cbar.ax.yaxis.get_offset_text().set_visible(False)
+    off = off.replace('−', '-')
+    m = re.fullmatch(r'1e([+-]?\d+)', off.strip())
+    scale = rf'$\times 10^{{{int(m.group(1))}}}$' if m else f'×{off}'
+    cbar.set_label(f'{base_label}  ({scale})')
+
+
+def plot_gradient_comparison(fields, positions, display_bbox, depth_label, fname,
+                             cbar_label='s$^{-1}$', pct=98):
+    """
+    3x3 map figure comparing the array's plane-fit gradients to the true model field.
+
+    Rows are ∂U/∂x, ∂V/∂y and their sum (horizontal divergence δ); columns are
+    True (the spatially varying model gradient), Estimate (the single plane-fit slope
+    the array reports — a constant over the footprint) and Difference (True − Estimate).
+    Every panel is a filled contour with N_GRAD_LEVELS (=101) levels and a zero-centred
+    balance colormap; the Difference column therefore diverges about 0 by construction.
+    Within each row the True and Estimate panels share one symmetric colour scale (so the
+    constant estimate is directly comparable to the truth); the Difference panel gets its
+    own symmetric scale. Glider positions are overlaid on every panel.
+
+    Parameters
+    ----------
+    fields : dict from osse_tools.gradient_map_fields
+        du_dx, dv_dy, div (each (nlat, nlon)), lon, lat (1-D), and U, V (co-located
+        mean components used to sample the plane-fit estimate).
+    positions : list of (lat, lon)
+        The cell's glider positions (drives the plane-fit estimate and the overlay).
+    display_bbox : (lon0, lon1, lat0, lat1)
+        Region shown (the true field is differentiated on the full cached region, then
+        cropped here so np.gradient edge effects stay outside the array).
+    depth_label : str    e.g. '0–80 m mean' or '50 m'; used in the suptitle.
+    fname : str          output path.
+    """
+    import matplotlib.cm as mcm
+    from matplotlib.colors import Normalize
+
+    lon, lat = fields['lon'], fields['lat']
+    est = dict(zip(('du_dx', 'dv_dy'),
+                   ot.planefit_gradient_scalars(fields['U'], fields['V'], lon, lat, positions)))
+    est['div'] = est['du_dx'] + est['dv_dy']
+
+    lon0, lon1, lat0, lat1 = display_bbox
+    mx = (lon >= lon0) & (lon <= lon1)
+    my = (lat >= lat0) & (lat <= lat1)
+    xc, yc = lon[mx], lat[my]
+    glat = [p[0] for p in positions]
+    glon = [p[1] for p in positions]
+
+    rows = [('du_dx', r'$\partial U/\partial x$'),
+            ('dv_dy', r'$\partial V/\partial y$'),
+            ('div',   r'divergence $\delta$')]
+    col_titles = ['True', 'Estimate (plane fit)', 'Difference (True − Est)']
+
+    fig, axes = plt.subplots(3, 3, figsize=(6.7 * 3, 4.6 * 3), squeeze=False)
+    cbars = []
+    for i, (key, rlab) in enumerate(rows):
+        true_c = np.asarray(fields[key])[np.ix_(my, mx)]
+        est_c = np.full_like(true_c, est[key])
+        diff_c = true_c - est_c
+        # True & Estimate share one symmetric scale (include the estimate so its
+        # constant panel is never off-scale); Difference gets its own.
+        lim_te = max(float(np.nanpercentile(np.abs(true_c), pct)), abs(est[key])) or 1e-30
+        lim_d = float(np.nanpercentile(np.abs(diff_c), pct)) or 1e-30
+        panels = [(true_c, lim_te, f'{rlab}  —  {col_titles[0]}'),
+                  (est_c,  lim_te, f'{rlab}  —  {col_titles[1]}'),
+                  (diff_c, lim_d,  f'{rlab}  —  {col_titles[2]}')]
+        for j, (vals, lim, title) in enumerate(panels):
+            ax = axes[i, j]
+            levels = np.linspace(-lim, lim, N_GRAD_LEVELS)
+            ax.contourf(xc, yc, vals, levels=levels, cmap=cmo.balance, extend='both')
+            sm = mcm.ScalarMappable(norm=Normalize(-lim, lim), cmap=cmo.balance)
+            cbar = plt.colorbar(sm, ax=ax, shrink=0.85, pad=0.03, extend='both',
+                                ticks=mticker.MaxNLocator(nbins=6, symmetric=True))
+            cbar.ax.tick_params(labelsize=9)
+            cbars.append((cbar, cbar_label))
+            ax.scatter(glon, glat, c='k', s=28, marker='o',
+                       edgecolors='w', linewidths=0.6, zorder=5)
+            ax.axhline(0, color='k', lw=0.5, ls=':')
+            ax.set_xlim(lon0, lon1)
+            ax.set_ylim(lat0, lat1)
+            ax.set_xlabel('Longitude (°E)')
+            ax.set_ylabel('Latitude (°N)')
+            ax.set_title(title, fontsize=11)
+    for cbar, base in cbars:
+        _fold_offset_into_label(fig, cbar, base)
+    h = 4.6 * 3
+    fig.tight_layout(rect=[0, 0, 1, 1 - 0.45 / h])
+    fig.suptitle(f'Array plane-fit gradients vs model truth — {depth_label}',
+                 fontsize=14, y=1 - 0.10 / h)
+    fig.savefig(fname, dpi=140, bbox_inches='tight')
+    plt.close(fig)
+    return fname
+
+
+def plot_transect(panels, cbar_label, cmap, suptitle, fname,
+                  diverging=False, ncols=3, pct=(2, 98), groups=None,
+                  contour=None):
+    """
+    Grid of depth-latitude transects (a meridional section at a fixed longitude),
+    styled to match plot_domain_grid but with depth on the y-axis (0 at top, deepening
+    downward).
+
+    Parameters
+    ----------
+    panels : list of (values2d, lat, depth, title)
+        Each panel's field on (depth, lat); `lat` (x, °N) and `depth` (y, m, negative
+        downward) are the 1-D axes. values2d has shape (len(depth), len(lat)).
+    cbar_label, cmap, suptitle, fname : str / colormap
+    diverging : bool
+        Symmetric zero-centred limits (velocity); else sequential (temperature).
+    ncols : int
+        Panels per row (extra axes hidden).
+    groups : list or None
+        Same length as panels; panels sharing a label share color limits.
+    contour : list of floats or None
+        Optional contour levels overdrawn in thin black (e.g. isotherms).
+    """
+    import matplotlib.ticker as mticker
+    import matplotlib.cm as mcm
+    from matplotlib.colors import Normalize
+    n = len(panels)
+    nrows = int(np.ceil(n / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(6.7 * ncols, 4.4 * nrows),
+                             squeeze=False)
+    axf = axes.ravel()
+    panel_lims = _group_limits(panels, groups, diverging, pct) if groups else None
+
+    cbars = []
+    for i, (ax, (vals, xx, yy, title)) in enumerate(zip(axf, panels)):
+        vals = np.asarray(vals)
+        if panel_lims is not None:
+            vmin, vmax = panel_lims[i]
+        elif diverging:
+            vmax = float(np.nanpercentile(np.abs(vals), pct[1])); vmin = -vmax
+        else:
+            vmin = float(np.nanpercentile(vals, pct[0]))
+            vmax = float(np.nanpercentile(vals, pct[1]))
+        levels = np.linspace(vmin, vmax, N_CONTOUR_LEVELS)
+        ax.contourf(xx, yy, vals, levels=levels, cmap=cmap, extend='both')
+        if contour is not None:
+            cs = ax.contour(xx, yy, vals, levels=contour, colors='k', linewidths=0.6)
+            ax.clabel(cs, fmt='%g', fontsize=7)
+        sm = mcm.ScalarMappable(norm=Normalize(vmin, vmax), cmap=cmap)
+        cbar = plt.colorbar(sm, ax=ax, shrink=0.85, pad=0.03, label=cbar_label,
+                            extend='both',
+                            ticks=mticker.MaxNLocator(nbins=6, symmetric=diverging))
+        cbar.ax.tick_params(labelsize=9)
+        cbars.append(cbar)
+        ax.axvline(0, color='k', lw=0.5, ls=':')
+        ax.set_xlabel('Latitude (°N)')
+        ax.set_ylabel('Depth (m)')
+        ax.set_title(title)
+    for ax in axf[n:]:
+        ax.axis('off')
+    fig.canvas.draw()
+    for cbar in cbars:
+        off = cbar.ax.yaxis.get_major_formatter().get_offset()
+        if off:
+            cbar.ax.yaxis.get_offset_text().set_visible(False)
+            off = off.replace('−', '-')
+            m = re.fullmatch(r'1e([+-]?\d+)', off.strip())
+            scale = rf'$\times 10^{{{int(m.group(1))}}}$' if m else f'×{off}'
+            cbar.set_label(f'{cbar_label}  ({scale})')
+    h = 4.4 * nrows
+    if suptitle:
+        fig.tight_layout(rect=[0, 0, 1, 1 - 0.45 / h])
+        fig.suptitle(suptitle, fontsize=13, y=1 - 0.10 / h)
+    else:
+        fig.tight_layout()
+    fig.savefig(fname, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    return fname
+
+
 def plot_footprint_profiles(profiles, coord, rows, widths, shapes, colors,
                             xlabel, legend_title, fname, ref_x=None):
     """
@@ -649,66 +835,28 @@ def plot_footprint_profiles(profiles, coord, rows, widths, shapes, colors,
     return fname
 
 
-def plot_point_autocorr(per_var, suptitle, fname, xmax_deg=None):
+def plot_anchor_corr_map(panels, anchor_xy, suptitle, fname, ncols=3,
+                         ref_levels=(1.0 / np.e, 0.0), nlevels=101,
+                         xlabel='Longitude (°E)', ylabel='Latitude (°N)',
+                         hline=0.0, cbar_label='correlation'):
     """
-    Spatial autocorrelation function anchored at a single grid point, one panel per
-    variable: zonal (solid) and meridional (dashed) correlation vs separation.
+    Grid of anchored 2-D correlation maps, one panel per variable, on fixed diverging
+    limits (-1..1, zero-centered cmo.balance) so panels are directly comparable; the
+    anchor is marked with a star and `ref_levels` drawn as labeled contours (r=0 dotted,
+    positive levels solid) so the coherent footprint -- and whether an array fits inside
+    it -- is readable. Serves the horizontal temporal one-point maps (x=lon, y=lat) AND
+    the depth-section maps (x=lat|lon, y=depth) alike -- set xlabel/ylabel/hline per case.
 
-    r=0 is marked so any negative lobe is readable; no 1/e reference/crossing markers --
-    the curve shape is the point.
-
-    per_var : list of (var_title, dict) from osse_tools.mean_field_point_autocorr:
-              sep_x_deg, r_x, sep_y_deg, r_y.
-    """
-    from matplotlib.lines import Line2D
-    n = len(per_var)
-    # shared, data-driven lower limit so a deep negative lobe is never clipped
-    ymin = min(float(np.nanmin(np.concatenate([p['r_x'], p['r_y']])))
-               for _, p in per_var)
-    ylo = max(-1.02, min(-0.3, ymin - 0.08))
-    fig, axes = plt.subplots(1, n, figsize=(5.2 * n, 4.2), squeeze=False, sharey=True)
-    for ax, (title, pac) in zip(axes.ravel(), per_var):
-        ax.plot(pac['sep_x_deg'], pac['r_x'], '-', color='#1b6ca8', lw=1.9)
-        ax.plot(pac['sep_y_deg'], pac['r_y'], '--', color='#c0392b', lw=1.9)
-        ax.axhline(0, color='k', lw=0.7)
-        xm = xmax_deg or max(pac['sep_x_deg'][-1], pac['sep_y_deg'][-1])
-        ax.set_xlim(0, xm)
-        ax.set_ylim(ylo, 1.02)
-        ax.grid(True, lw=0.3, alpha=0.5)
-        ax.set_xlabel('separation (°)')
-        ax.set_ylabel('autocorrelation')
-        ax.set_title(title)
-    handles = [Line2D([0], [0], color='#1b6ca8', lw=1.9, ls='-', label='zonal'),
-               Line2D([0], [0], color='#c0392b', lw=1.9, ls='--', label='meridional')]
-    fig.legend(handles=handles, loc='upper center', ncol=2, frameon=False,
-               bbox_to_anchor=(0.5, 1.0))
-    fig.suptitle(suptitle, fontsize=13, y=1.10)
-    fig.tight_layout(rect=[0, 0, 1, 0.94])
-    fig.savefig(fname, dpi=150, bbox_inches='tight')
-    plt.close(fig)
-    return fname
-
-
-def plot_anchor_corr_map(panels, anchor_lonlat, suptitle, fname, ncols=3,
-                         ref_levels=(1.0 / np.e, 0.0)):
-    """
-    Grid of anchored 2-D spatial-correlation maps, one panel per variable.
-
-    Each panel is a filled correlation map on fixed diverging limits (-1..1, zero-centred
-    cmo.balance) so panels are directly comparable; the anchor is marked with a star and
-    `ref_levels` are drawn as labelled contours (r=0 dotted, positive levels solid) so the
-    coherent footprint -- and whether an array fits inside it -- is readable. Used for both
-    the temporal one-point map (osse_tools.point_corr_map) and the mean-field 2-D pattern
-    (mean_field_point_corr_map).
-
-    panels : list of (r2d, lon, lat, title) with lon/lat the map coords of the pattern.
-    anchor_lonlat : (lon0, lat0) marked on every panel.
-    ref_levels : one sequence of contour levels shared by all panels, OR a list of such
+    panels : list of (r2d, xx, yy, title) with xx/yy the panel's 1-D axes.
+    anchor_xy : (x0, y0) marked on every panel.
+    ref_levels : one contour-level sequence shared by all panels, OR a list of such
         sequences (one per panel) for per-panel control (e.g. drop the 0 contour on W).
+    nlevels : number of filled contour levels spanning -1..1 (101 -> zero on a boundary).
+    hline : y for a thin reference line (equator / anchor depth); None to omit.
     """
     from matplotlib.colors import Normalize
     import matplotlib.cm as mcm
-    lon0, lat0 = anchor_lonlat
+    x0, y0 = anchor_xy
     n = len(panels)
     # broadcast a shared level sequence, or take one sequence per panel
     if not ref_levels:
@@ -721,18 +869,69 @@ def plot_anchor_corr_map(panels, anchor_lonlat, suptitle, fname, ncols=3,
     fig, axes = plt.subplots(nrows, ncols, figsize=(6.7 * ncols, 4.8 * nrows),
                              squeeze=False)
     axf = axes.ravel()
-    levels = np.linspace(-1, 1, N_CONTOUR_LEVELS)
+    levels = np.linspace(-1, 1, nlevels)
     for ax, (r, xx, yy, title), lv in zip(axf, panels, per_panel):
         ax.contourf(xx, yy, r, levels=levels, cmap=cmo.balance, extend='neither')
         if lv:
             slv = sorted(lv)
             ax.contour(xx, yy, r, levels=slv, colors='k', linewidths=0.8,
                        linestyles=['-' if v != 0 else ':' for v in slv])
-        ax.plot(lon0, lat0, marker='*', ms=15, mfc='yellow', mec='k', mew=0.8)
-        ax.axhline(0, color='k', lw=0.5, ls=':')
+        ax.plot(x0, y0, marker='*', ms=15, mfc='yellow', mec='k', mew=0.8)
+        if hline is not None:
+            ax.axhline(hline, color='k', lw=0.5, ls=':')
         sm = mcm.ScalarMappable(norm=Normalize(-1, 1), cmap=cmo.balance)
-        plt.colorbar(sm, ax=ax, shrink=0.8, pad=0.03, label='correlation',
+        plt.colorbar(sm, ax=ax, shrink=0.8, pad=0.03, label=cbar_label,
                      ticks=mticker.MaxNLocator(nbins=6, symmetric=True))
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel(ylabel)
+        ax.set_title(title)
+    for ax in axf[n:]:
+        ax.axis('off')
+    h = 4.8 * nrows
+    if suptitle:
+        fig.tight_layout(rect=[0, 0, 1, 1 - 0.45 / h])
+        fig.suptitle(suptitle, fontsize=13, y=1 - 0.10 / h)
+    else:
+        fig.tight_layout()
+    fig.savefig(fname, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    return fname
+
+
+def plot_efolding_map(panels, anchor_xy, suptitle, fname, ncols=3, nlevels=101,
+                      cmap=cmo.tempo, vmax_days=None, groups=None):
+    """
+    Grid of e-folding temporal-decorrelation-scale maps, one panel per variable: color is
+    the decorrelation time in days (sequential). Each panel is scaled to its own robust
+    max (98th pct) unless vmax_days is given; the anchor is marked with a star.
+
+    panels : list of (tau2d_days, lon, lat, title).
+    groups : optional list (len == panels) of group keys; panels sharing a key share the
+        same color max (e.g. ['uv','uv','w'] so U and V use one scale, W its own).
+    """
+    from matplotlib.colors import Normalize
+    import matplotlib.cm as mcm
+    x0, y0 = anchor_xy
+    n = len(panels)
+    nrows = int(np.ceil(n / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(6.7 * ncols, 4.8 * nrows),
+                             squeeze=False)
+    axf = axes.ravel()
+    # per-panel robust vmax, then share the max within each group
+    vmaxs = [vmax_days or float(np.nanpercentile(tau, 98)) for (tau, _, _, _) in panels]
+    if groups is not None:
+        gmax = {}
+        for g, vm in zip(groups, vmaxs):
+            gmax[g] = max(gmax.get(g, 0.0), vm)
+        vmaxs = [gmax[g] for g in groups]
+    for ax, (tau, xx, yy, title), vmax in zip(axf, panels, vmaxs):
+        levels = np.linspace(0, vmax, nlevels)
+        ax.contourf(xx, yy, tau, levels=levels, cmap=cmap, extend='max')
+        ax.plot(x0, y0, marker='*', ms=15, mfc='yellow', mec='k', mew=0.8)
+        ax.axhline(0, color='k', lw=0.5, ls=':')
+        sm = mcm.ScalarMappable(norm=Normalize(0, vmax), cmap=cmap)
+        plt.colorbar(sm, ax=ax, shrink=0.8, pad=0.03, label='e-folding scale (days)',
+                     ticks=mticker.MaxNLocator(nbins=6))
         ax.set_xlabel('Longitude (°E)')
         ax.set_ylabel('Latitude (°N)')
         ax.set_title(title)
@@ -744,6 +943,108 @@ def plot_anchor_corr_map(panels, anchor_lonlat, suptitle, fname, ncols=3,
         fig.suptitle(suptitle, fontsize=13, y=1 - 0.10 / h)
     else:
         fig.tight_layout()
+    fig.savefig(fname, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    return fname
+
+
+def plot_hovmoller(panels, anchor_lon, suptitle, fname, ncols=3, nlevels=101,
+                   cmap=cmo.balance):
+    """
+    Longitude-time hovmollers of the fluctuation field along the anchor latitude, one
+    panel per variable (per-panel symmetric limits). A dashed rectangle of half-width =
+    spatial e-folding scale Lx and half-height = temporal e-folding scale tau, centered on
+    the anchor longitude at mid-record, shows the decorrelation footprint (x and t joined).
+
+    panels : list of (fld (nt, nlon), lon, t_days, title, Lx_deg, tau_days, unit).
+    """
+    from matplotlib.patches import Rectangle
+    from matplotlib.colors import Normalize
+    import matplotlib.cm as mcm
+    n = len(panels)
+    nrows = int(np.ceil(n / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(6.7 * ncols, 5.2 * nrows),
+                             squeeze=False)
+    axf = axes.ravel()
+    for ax, (fld, lon, t, title, Lx, tau, unit) in zip(axf, panels):
+        vmax = float(np.nanpercentile(np.abs(fld), 98))
+        levels = np.linspace(-vmax, vmax, nlevels)
+        ax.contourf(lon, t, fld, levels=levels, cmap=cmap, extend='both')
+        tc = 0.5 * (t[0] + t[-1])
+        has_box = np.isfinite(Lx) and np.isfinite(tau)
+        if has_box:
+            ax.add_patch(Rectangle((anchor_lon - Lx, tc - tau), 2 * Lx, 2 * tau,
+                                   fill=False, ec='k', lw=1.6, ls='--'))
+        ax.axvline(anchor_lon, color='k', lw=0.6, ls=':')
+        sm = mcm.ScalarMappable(norm=Normalize(-vmax, vmax), cmap=cmap)
+        plt.colorbar(sm, ax=ax, shrink=0.85, pad=0.03, label=unit,
+                     ticks=mticker.MaxNLocator(nbins=6, symmetric=True))
+        ax.set_xlabel('Longitude (°E)')
+        ax.set_ylabel('time (days)')
+        ax.set_title(f'{title}  (L={Lx:.2f}°, τ={tau:.1f} d)' if has_box else title)
+    for ax in axf[n:]:
+        ax.axis('off')
+    h = 5.2 * nrows
+    if suptitle:
+        fig.tight_layout(rect=[0, 0, 1, 1 - 0.4 / h])
+        fig.suptitle(suptitle, fontsize=13, y=1 - 0.10 / h)
+    else:
+        fig.tight_layout()
+    fig.savefig(fname, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    return fname
+
+
+def plot_corr_cuts(cuts, suptitle, fname, colors=None):
+    """
+    Four-panel autocorrelation cuts through the one-point maps at the anchor: correlation
+    vs longitude, vs latitude, vs depth, and vs time. Each panel overlays one line per
+    provided series (e.g. the depth options / anchor depths). A 1/e reference is marked.
+
+    cuts : dict with keys 'lon','lat','depth','time', each a list of (label, x, r). The
+           'depth' panel plots depth on the y-axis (r on x); the others plot r on the
+           y-axis vs their coordinate. A key that is absent or empty is skipped, so a
+           depth-averaged cut (no single anchor depth) can drop the depth panel.
+    """
+    from matplotlib.lines import Line2D
+    all_specs = [('lon', 'autocorrelation', 'Longitude (°E)', 'r_vs_x'),
+                 ('lat', 'autocorrelation', 'Latitude (°N)', 'r_vs_x'),
+                 ('depth', 'Depth (m)', 'autocorrelation', 'r_vs_y'),
+                 ('time', 'autocorrelation', 'lag (days)', 'r_vs_x')]
+    specs = [s for s in all_specs if cuts.get(s[0])]
+    fig, axes = plt.subplots(1, len(specs), figsize=(5 * len(specs), 4.4),
+                             squeeze=False)
+    axes = axes.ravel()
+    handles = labels = None
+    for ax, (key, ylab, xlab, mode) in zip(axes, specs):
+        series = cuts.get(key, [])
+        for i, (label, x, r) in enumerate(series):
+            c = None if colors is None else colors[i % len(colors)]
+            if mode == 'r_vs_y':
+                ax.plot(r, x, '-', lw=1.7, color=c, label=label)
+            else:
+                ax.plot(x, r, '-', lw=1.7, color=c, label=label)
+        if mode == 'r_vs_y':
+            ax.axvline(1 / np.e, color='0.5', lw=0.7, ls=':')
+            ax.axvline(0, color='k', lw=0.6)
+            ax.set_xlim(-0.75, 1.02)
+        else:
+            ax.axhline(1 / np.e, color='0.5', lw=0.7, ls=':')
+            ax.axhline(0, color='k', lw=0.6)
+            ax.set_ylim(-0.75, 1.02)
+        ax.set_xlabel(xlab)
+        ax.set_ylabel(ylab)
+        ax.grid(True, lw=0.3, alpha=0.5)
+        if handles is None and series:
+            handles = [Line2D([0], [0], lw=1.7,
+                              color=(None if colors is None else colors[i % len(colors)]))
+                       for i in range(len(series))]
+            labels = [s[0] for s in series]
+    if handles:
+        fig.legend(handles, labels, loc='upper center', ncol=len(labels), frameon=False,
+                   bbox_to_anchor=(0.5, 1.0))
+    fig.suptitle(suptitle, fontsize=13, y=1.08)
+    fig.tight_layout(rect=[0, 0, 1, 0.93])
     fig.savefig(fname, dpi=150, bbox_inches='tight')
     plt.close(fig)
     return fname

@@ -1,9 +1,12 @@
 """
-Domain maps of TIME-MEAN velocity structure: time/depth-mean velocity, the mean
-horizontal divergence, and the mean-current gradient magnitude and shear components.
-Every diagnostic is of the time-mean field. Figures are saved under
-domain/{full_domain,crop_140}/{velocities,gradients}/ — full-domain vs equatorial-crop
-views, split into velocity/current diagnostics vs gradient ones.
+Domain maps of TIME-MEAN structure: time/depth-mean velocity, the mean horizontal
+divergence, the mean-current gradient magnitude and shear components, the
+time-mean temperature (depth-averaged and at 25/50/70 m), and depth-latitude
+transects at 140°W (time-mean temperature + velocity). Every diagnostic is of the
+time-mean field. Figures are saved under
+domain/{full_domain,crop_140}/{velocities,gradients,temperature}/ — full-domain vs
+equatorial-crop views, split by diagnostic type. The 140°W transects share the same
+full/crop split (full latitude range vs the equatorial band).
 
 Split into two phases so figure styling can be re-tuned without re-reading the model:
   * COMPUTE — reads the model once and caches only the time/depth-mean U, V, W fields
@@ -16,10 +19,11 @@ gradients/: domain_gradient_mag, domain_gradient_shear.
 
 Usage:
     python run_domain_maps.py [depths_csv] [periods_csv] [mode]
-    mode ∈ {all (default), compute, plot}
+    mode ∈ {all (default), compute, plot, transect}
     e.g. python run_domain_maps.py 70,120,250 3mo,1mo          # compute + plot
          python run_domain_maps.py 70,120,250 3mo,1mo plot     # re-plot from cache (fast)
          python run_domain_maps.py 70 1mo compute              # (re)compute one config
+         python run_domain_maps.py 70 3mo,1mo transect         # only the 140°W transects
 """
 
 import os
@@ -34,7 +38,7 @@ matplotlib.use('Agg')
 import cmocean.cm as cmo
 
 import osse_tools as ot
-from plotting_tools import plot_domain_grid
+from plotting_tools import plot_domain_grid, plot_transect
 
 # dt60 run: deltaT=60 s (auto-read from the run's `data` namelist by load_model),
 # 3-hourly diag_state output -> iter step 180 (180*60 s = 3 h), 718 records.
@@ -45,8 +49,15 @@ CACHE_DIR = '/data/SO3/edavenport/tpose24/cache'
 
 VARS = ('UVEL', 'VVEL', 'WVEL')          # -> U, V, W
 LABEL = {'UVEL': 'U', 'VVEL': 'V', 'WVEL': 'W'}
+T_LEVELS = (25, 50, 70)                  # fixed depths (m) for the time-mean T maps
 CROP_LON = slice(217, 223)
 CROP_LAT = slice(-3, 3)
+# meridional (depth-latitude) transect at a fixed longitude (140°W = 220°E). Unlike the
+# depth-mean maps this keeps the full water column, so it is computed per period only
+# (independent of the map depth cutoffs) and cached separately.
+TRANSECT_LON = 220.0                      # 140°W
+TRANSECT_MAXDEPTH = 250                   # m; deep enough for the thermocline/EUC core
+T_ISOTHERMS = list(range(12, 30, 2))      # °C isotherms overlaid on the T transect
 # shared color-limit groups: U & V share one scale (directly comparable), W its own
 GROUP_UVW = ['uv', 'uv', 'w']                              # for U/V/W panels
 # shear figure: the U row is flipped (∂U/∂y, ∂U/∂x) so each column holds one shared
@@ -86,22 +97,72 @@ def _panels(das, titles):
     return full, crop
 
 
-def _save_pair(base, panels_full, panels_crop, subdir, **kw):
+def _save_pair(base, panels_full, panels_crop, subdir, plotter=plot_domain_grid, **kw):
     """
     Save the full-domain and crop_ figure for one diagnostic into the folder tree
-    domain/{full_domain,crop_140}/{subdir}/, where subdir is 'velocities' or
-    'gradients'.
+    domain/{full_domain,crop_140}/{subdir}/, where subdir is 'velocities',
+    'gradients' or 'temperature'. `plotter` picks the renderer (map vs transect).
     """
     full_dir = os.path.join(OUTDIR, 'full_domain', subdir)
     crop_dir = os.path.join(OUTDIR, 'crop_140', subdir)
     os.makedirs(full_dir, exist_ok=True)
     os.makedirs(crop_dir, exist_ok=True)
-    plot_domain_grid(panels_full, fname=os.path.join(full_dir, f'{base}.png'), **kw)
-    plot_domain_grid(panels_crop, fname=os.path.join(crop_dir, f'crop_{base}.png'), **kw)
+    plotter(panels_full, fname=os.path.join(full_dir, f'{base}.png'), **kw)
+    plotter(panels_crop, fname=os.path.join(crop_dir, f'crop_{base}.png'), **kw)
 
 
 def _cache_path(d, pkey):
     return os.path.join(CACHE_DIR, f'domain_maps_{d}m_{pkey}.pkl')
+
+
+def _transect_cache_path(pkey):
+    return os.path.join(CACHE_DIR, f'domain_transect_{pkey}.pkl')
+
+
+# --------------------------------------------------------------------------- #
+# Meridional (depth-latitude) transect at a fixed longitude                    #
+# --------------------------------------------------------------------------- #
+def compute_transect(ds, tsel, lon=TRANSECT_LON, maxdepth=TRANSECT_MAXDEPTH):
+    """Time-mean depth-latitude section at fixed longitude `lon` for THETA and each
+    velocity component, on each field's native grid (horizontal interp to `lon`, native
+    depth to `maxdepth`). Returns {var -> (values[depth, lat], lat, depth)}."""
+    out = {}
+    for v in ('THETA',) + VARS:
+        gx, _ = ot._GRID[v]
+        zc = ot._ZCOORD.get(v, 'Z')
+        da = ds[v].sel(time=tsel).mean('time').interp({gx: lon})
+        da = da.sel({zc: slice(0.0, -maxdepth)}).compute()
+        ydim = [d for d in da.dims if d != zc][0]      # the latitude dim (YC/YG)
+        da = da.transpose(zc, ydim)
+        out[v] = (da.values, da[ydim].values, da[zc].values)
+    return out
+
+
+def _transect_panels(cache, keys):
+    """(values, lat, depth, title) tuples for full and crop (equatorial) latitude views."""
+    full, crop = [], []
+    for v, title in keys:
+        vals, lat, dep = cache[v]
+        full.append((vals, lat, dep, title))
+        m = (lat >= CROP_LAT.start) & (lat <= CROP_LAT.stop)
+        crop.append((vals[:, m], lat[m], dep, title))
+    return full, crop
+
+
+def plot_transect_config(cache, suf, plabel):
+    """Temperature and velocity depth-latitude transects at 140°W (full + crop)."""
+    head = f'TPOSE24 {plabel}, 140°W section'
+    # temperature (with isotherms)
+    full, crop = _transect_panels(cache, [('THETA', 'temperature')])
+    _save_pair(f'domain_transect_temperature_140W{suf}', full, crop, 'temperature',
+               cbar_label='°C', cmap=cmo.thermal, diverging=False, ncols=1,
+               suptitle=f'{head} — time-mean temperature', contour=T_ISOTHERMS,
+               plotter=plot_transect)
+    # velocity components (each on its own scale, like the depth-mean velocity map)
+    full, crop = _transect_panels(cache, [(v, LABEL[v]) for v in VARS])
+    _save_pair(f'domain_transect_velocity_140W{suf}', full, crop, 'velocities',
+               cbar_label='m s$^{-1}$', cmap=cmo.balance, diverging=True, ncols=3,
+               suptitle=f'{head} — time-mean velocity', plotter=plot_transect)
 
 
 # --------------------------------------------------------------------------- #
@@ -179,10 +240,38 @@ def plot_config(cache, d, suf, plabel):
                groups=GROUP_SHEAR,
                suptitle=f'{head} — mean-current shear components')
 
+    # --- 4. time-mean temperature structure -------------------------------
+    # Depth-averaged over 0-d plus fixed levels 25/50/70 m, so the horizontal
+    # temperature structure (equatorial cold tongue, fronts) is visible at each
+    # depth. Panels scale independently (T falls ~10 °C from surface to 70 m, so a
+    # shared scale would wash out the deeper structure).
+    if 'T' in cache:
+        T = cache['T']
+        das = [T['depthavg']] + [T['levels'][l] for l in T_LEVELS]
+        titles = [f'0–{d} m mean'] + [f'{l} m' for l in T_LEVELS]
+        full, crop = _panels(das, titles)
+        _save_pair(f'domain_mean_temperature_{d}m{suf}', full, crop, 'temperature',
+                   cbar_label='°C', cmap=cmo.thermal, diverging=False, ncols=2,
+                   suptitle=f'{head} — time-mean temperature')
+
 
 def main(depths, periods, mode='all'):
     os.makedirs(OUTDIR, exist_ok=True)
     os.makedirs(CACHE_DIR, exist_ok=True)
+
+    # 'transect' mode: (re)compute + plot only the 140°W transects, reusing the existing
+    # depth-mean map caches (much cheaper than a full recompute).
+    if mode == 'transect':
+        ds = ot.load_model(RUN_DIR, ITERS).sel(time=slice('2012-10-11', None))
+        for pkey in periods:
+            tsel, suf, plabel = PERIODS[pkey]
+            t1 = time.time()
+            cache = compute_transect(ds, tsel)
+            with open(_transect_cache_path(pkey), 'wb') as f:
+                pickle.dump(cache, f)
+            plot_transect_config(cache, suf, plabel)
+            sys.stderr.write(f"TRANSECT {pkey}  ({time.time() - t1:.0f}s)\n")
+        return
 
     if mode in ('all', 'compute'):
         ds = ot.load_model(RUN_DIR, ITERS).sel(time=slice('2012-10-11', None))
@@ -192,18 +281,37 @@ def main(depths, periods, mode='all'):
             series[v] = ot.depth_mean_series(ds, v, depths)
             sys.stderr.write(f"  loaded depth-mean series {LABEL[v]}  "
                              f"({time.time() - t0:.0f}s)\n")
+        # temperature: depth-averaged series (per cutoff) + fixed levels (25/50/70 m).
+        # NB select time BEFORE interp(Z): xarray's interp drops the time index.
+        t_series = ot.depth_mean_series(ds, 'THETA', depths)
+        t_z = [-float(l) for l in T_LEVELS]
+        sys.stderr.write(f"  loaded temperature fields  ({time.time() - t0:.0f}s)\n")
         for pkey in periods:
             tsel, _, _ = PERIODS[pkey]
+            # meridional transect at 140°W — full column, independent of the map cutoffs
+            t1 = time.time()
+            with open(_transect_cache_path(pkey), 'wb') as f:
+                pickle.dump(compute_transect(ds, tsel), f)
+            sys.stderr.write(f"COMPUTED transect {pkey}  ({time.time() - t1:.0f}s)\n")
+            Tlev_mean = ds.THETA.sel(time=tsel).interp(Z=t_z).mean('time').compute()
+            Tlev = {l: Tlev_mean.sel(Z=-float(l), method='nearest') for l in T_LEVELS}
             for d in depths:
                 t1 = time.time()
                 S = {v: series[v][d].sel(time=tsel) for v in VARS}
+                cache = compute_config(S)
+                cache['T'] = {'depthavg': t_series[d].sel(time=tsel).mean('time').compute(),
+                              'levels': Tlev}
                 with open(_cache_path(d, pkey), 'wb') as f:
-                    pickle.dump(compute_config(S), f)
+                    pickle.dump(cache, f)
                 sys.stderr.write(f"COMPUTED {pkey} {d}m  ({time.time() - t1:.0f}s)\n")
 
     if mode in ('all', 'plot'):
         for pkey in periods:
             _, suf, plabel = PERIODS[pkey]
+            if os.path.exists(_transect_cache_path(pkey)):
+                with open(_transect_cache_path(pkey), 'rb') as f:
+                    plot_transect_config(pickle.load(f), suf, plabel)
+            sys.stderr.write(f"PLOTTED transect {pkey}\n")
             for d in depths:
                 with open(_cache_path(d, pkey), 'rb') as f:
                     cache = pickle.load(f)
