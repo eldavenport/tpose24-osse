@@ -162,20 +162,23 @@ def _ratio_contourf(ax, fr, kz, St, Se):
 
 
 def _decade_ticks(cb, vmin, vmax):
-    """Clean power-of-ten ticks on a LogNorm colorbar."""
-    dec = [10.0 ** e for e in range(int(np.floor(np.log10(vmin))),
-                                    int(np.ceil(np.log10(vmax))) + 1)]
+    """Clean power-of-ten ticks on a LogNorm colorbar. Ticks are kept strictly
+    INSIDE [vmin, vmax] — out-of-range ticks expand the bar axis past the colored
+    solids and leave white gaps at both ends."""
+    dec = [10.0 ** e for e in range(int(np.ceil(np.log10(vmin))),
+                                    int(np.floor(np.log10(vmax))) + 1)]
     cb.set_ticks(dec)
     cb.ax.yaxis.set_major_formatter(mticker.LogFormatterMathtext())
     cb.ax.minorticks_off()
 
 
 def _psd_colorbar(fig, axes_list, vmin, vmax, label):
-    """Smooth (ScalarMappable) log PSD colorbar — avoids contourf banding gaps."""
+    """Smooth (ScalarMappable) log PSD colorbar. set_aspect('auto') lets the bar
+    fill its allocated axes (a fixed aspect leaves white gaps at both ends)."""
     sm = ScalarMappable(norm=LogNorm(vmin=vmin, vmax=vmax), cmap=cmo.thermal)
     sm.set_array([])
-    cb = fig.colorbar(sm, ax=axes_list, location="right", pad=0.01,
-                      shrink=0.85, aspect=32)
+    cb = fig.colorbar(sm, ax=axes_list, location="right", pad=0.01, shrink=0.9)
+    cb.ax.set_aspect("auto")
     _decade_ticks(cb, vmin, vmax)
     cb.set_label(label, fontsize=8)
     return cb
@@ -185,8 +188,9 @@ def _ratio_colorbar(fig, axes_list):
     sm = ScalarMappable(norm=TwoSlopeNorm(vcenter=0, vmin=-4, vmax=4),
                         cmap=cmo.balance)
     sm.set_array([])
-    cb = fig.colorbar(sm, ax=axes_list, location="right", pad=0.01,
-                      shrink=0.85, aspect=32, ticks=[-4, -2, 0, 2, 4])
+    cb = fig.colorbar(sm, ax=axes_list, location="right", pad=0.01, shrink=0.9,
+                      ticks=[-4, -2, 0, 2, 4])
+    cb.ax.set_aspect("auto")
     cb.set_label(r"$\log_2$(est / true)", fontsize=10)
     return cb
 
@@ -377,8 +381,8 @@ def compute_global_limits(all_fields):
         return (v.min() * 0.5, v.max() * 2.0)
 
     return dict(x=(xmin, FREQ_MAX), y_w=ylim(wy), y_h=ylim(hy),
-                vmin_w=vmax_w * 1e-4, vmax_w=vmax_w,
-                vmin_h=vmax_h * 1e-4, vmax_h=vmax_h)
+                vmin_w=vmax_w * 1e-3, vmax_w=vmax_w,
+                vmin_h=vmax_h * 1e-3, vmax_h=vmax_h)
 
 
 if __name__ == "__main__":
