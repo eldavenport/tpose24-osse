@@ -1,0 +1,53 @@
+{
+  "name": "symdia_d0.5_c+0.5",
+  "family": "symdia",
+  "pattern": "symdia_d0.5",
+  "width": 0.25,
+  "diameter": 0.5,
+  "center_lat": 0.5,
+  "n_gliders_per_cell": 4,
+  "n_gliders_total": 4,
+  "cell_height_deg": 0.5,
+  "description": "Symmetric REGULAR diamond, 0.5deg E-W diameter (lon offset 0.25), centred at +0.5N, 4 gliders, no moorings.",
+  "positions": [
+    [
+      0.75,
+      220.0
+    ],
+    [
+      0.25,
+      220.0
+    ],
+    [
+      0.5,
+      219.75
+    ],
+    [
+      0.5,
+      220.25
+    ]
+  ],
+  "cells": [
+    {
+      "center_lat": 0.5,
+      "positions": [
+        [
+          0.75,
+          220.0
+        ],
+        [
+          0.25,
+          220.0
+        ],
+        [
+          0.5,
+          219.75
+        ],
+        [
+          0.5,
+          220.25
+        ]
+      ]
+    }
+  ]
+}
