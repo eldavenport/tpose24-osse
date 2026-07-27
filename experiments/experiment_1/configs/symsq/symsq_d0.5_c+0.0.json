@@ -1,0 +1,53 @@
+{
+  "name": "symsq_d0.5_c+0.0",
+  "family": "symsq",
+  "pattern": "symsq_d0.5",
+  "width": 0.25,
+  "diameter": 0.5,
+  "center_lat": 0.0,
+  "n_gliders_per_cell": 4,
+  "n_gliders_total": 4,
+  "cell_height_deg": 0.5,
+  "description": "Symmetric REGULAR square, 0.5deg E-W diameter (lon offset 0.25), centred at +0N, 4 gliders, no moorings.",
+  "positions": [
+    [
+      0.25,
+      219.75
+    ],
+    [
+      0.25,
+      220.25
+    ],
+    [
+      -0.25,
+      219.75
+    ],
+    [
+      -0.25,
+      220.25
+    ]
+  ],
+  "cells": [
+    {
+      "center_lat": 0.0,
+      "positions": [
+        [
+          0.25,
+          219.75
+        ],
+        [
+          0.25,
+          220.25
+        ],
+        [
+          -0.25,
+          219.75
+        ],
+        [
+          -0.25,
+          220.25
+        ]
+      ]
+    }
+  ]
+}
