@@ -156,8 +156,35 @@ def _fit_samples_uv(diam, z):
             "$v'T'$ (W m$^{-2}$)": latflux('V', 'T', 'vT', C.HFLUX)}
 
 
-def _fit_grid(out, per_diam, fname):
-    """Render a skew-normal fit grid: rows = quantities, cols = diameters."""
+def _bimodal_fit(data, xx, n_iter=300, seed=0):
+    """2-component Gaussian mixture via a compact 1-D EM (no sklearn dependency).
+
+    Returns (mixture pdf on xx, peak separation |mu2 - mu1|).  Used for the u'/v'
+    rows, whose oscillatory (TIW/eddy) dynamics give a genuinely bimodal PDF that a
+    single skew-normal cannot represent.
+    """
+    from scipy.stats import norm
+    x = np.asarray(data)[np.isfinite(data)]
+    mu = np.percentile(x, [25.0, 75.0]).astype(float)   # init peaks either side of centre
+    var = np.full(2, x.var() / 2.0 + 1e-12)
+    w = np.array([0.5, 0.5])
+    for _ in range(n_iter):
+        p = np.stack([w[k] * norm.pdf(x, mu[k], np.sqrt(var[k])) for k in range(2)])
+        r = p / (p.sum(0) + 1e-300)                      # responsibilities (2, N)
+        nk = r.sum(1) + 1e-12
+        w = nk / nk.sum()
+        mu = (r * x).sum(1) / nk
+        var = (r * (x - mu[:, None]) ** 2).sum(1) / nk + 1e-12
+    pdf = sum(w[k] * norm.pdf(xx, mu[k], np.sqrt(var[k])) for k in range(2))
+    return pdf, abs(mu[1] - mu[0])
+
+
+def _fit_grid(out, per_diam, fname, bimodal_labels=frozenset()):
+    """Render a distribution-fit grid: rows = quantities, cols = diameters.
+
+    Rows in `bimodal_labels` get a 2-Gaussian mixture (report peak separation);
+    all others get a skew-normal (report the shape parameter a).
+    """
     labels = list(per_diam[C.DIAMETERS[0]])
     xlims = {}                                          # shared per-row x-limits
     for lab in labels:
@@ -170,6 +197,7 @@ def _fit_grid(out, per_diam, fname):
     for ri, lab in enumerate(labels):
         lo, hi = xlims[lab]
         bins = np.linspace(lo, hi, 45); xx = np.linspace(lo, hi, 200)
+        bimodal = lab in bimodal_labels
         for ci, d in enumerate(C.DIAMETERS):
             ax = axes[ri, ci]
             o, t = per_diam[d][lab]
@@ -177,10 +205,20 @@ def _fit_grid(out, per_diam, fname):
                 data = data[np.isfinite(data)]
                 kw = dict(alpha=0.5) if name == 'truth' else dict(histtype='step', lw=2.2)
                 ax.hist(data, bins=bins, density=True, color=color, **kw)
-                a, loc, sc = skewnorm.fit(data)
-                ax.plot(xx, skewnorm.pdf(xx, a, loc, sc), color=color, lw=1.6, ls='--')
-                ax.text(0.03, 0.97 - (0.13 if name == 'array' else 0), f'{name}: a={a:.2f}',
-                        transform=ax.transAxes, va='top', color=color, fontsize=8.5)
+                if bimodal:                              # 2-Gaussian mixture -> peak separation
+                    pdf, sep = _bimodal_fit(data, xx)
+                    note = f'{name}: $\\Delta$peak={sep:.2g}'
+                else:                                    # skew-normal -> shape parameter a
+                    a, loc, sc = skewnorm.fit(data)
+                    pdf = skewnorm.pdf(xx, a, loc, sc)
+                    note = f'{name}: skew a={a:.2f}'
+                ax.plot(xx, pdf, color=color, lw=1.6, ls='--')
+                # right-aligned in the (typically emptier) upper-right corner with a light
+                # background so it never sits on the data
+                ax.text(0.97, 0.97 - (0.14 if name == 'array' else 0), note,
+                        transform=ax.transAxes, va='top', ha='right', color=color,
+                        fontsize=8.5,
+                        bbox=dict(boxstyle='round,pad=0.15', fc='white', ec='none', alpha=0.65))
             ax.set_xlim(lo, hi)
             P.tidy_x(ax, 4)
             if ri == 0:
@@ -189,10 +227,15 @@ def _fit_grid(out, per_diam, fname):
                 ax.set_xlabel(lab)
             if ci == 0:
                 ax.set_ylabel(f'{lab}\ndensity')
+    # pack the axes up to the figure top, reserving only a thin strip for the legend so
+    # tall (many-row) grids don't leave a big empty band under the legend
+    fig_h = 3.4 * nr
+    top = 1.0 - 0.5 / fig_h
+    fig.tight_layout(rect=[0, 0, 1, top])
     fig.legend(handles=[Line2D([0], [0], color='0.5', lw=8, alpha=0.5, label='truth hist'),
                         Line2D([0], [0], color='#08306b', lw=2.2, label='array hist'),
-                        Line2D([0], [0], color='0.3', lw=1.6, ls='--', label='skew-normal fit')],
-               loc='upper center', ncol=3, frameon=False, bbox_to_anchor=(0.5, 1.01))
+                        Line2D([0], [0], color='0.3', lw=1.6, ls='--', label='distribution fit')],
+               loc='upper center', ncol=3, frameon=False, bbox_to_anchor=(0.5, 1.0))
     return P.finish(fig, f'{out}/{fname}')
 
 
@@ -203,9 +246,14 @@ def fig_fit(out, z=DEPTH):
 
 
 def fig_fit_uv(out, z=DEPTH):
-    """Skew-normal fits to u', v', u'v', u'T', v'T' (rows), one column per diameter."""
+    """Fits to u', v', u'v', u'T', v'T' (rows), one column per diameter.
+
+    The oscillatory u'/v' rows get a bimodal (2-Gaussian) fit; the skewed flux rows
+    keep the skew-normal.
+    """
     per_diam = {d: _fit_samples_uv(d, z) for d in C.DIAMETERS}
-    return _fit_grid(out, per_diam, 'fit_distributions_uv.png')
+    bimodal = {"$u'$ (m s$^{-1}$)", "$v'$ (m s$^{-1}$)"}
+    return _fit_grid(out, per_diam, 'fit_distributions_uv.png', bimodal_labels=bimodal)
 
 
 def main():
