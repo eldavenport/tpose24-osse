@@ -59,6 +59,17 @@ FIGURES (test_figs/)
         (3) the dense (purple) / edge (orange) plane fits over the true field; the divergence
         column also draws the true mean (green) whose gap from the flat plane-fit IS the w error.
         The shape sets the gliders (edge sampling), the dense fill, and the truth.
+  <shape>/mechanism_odd_rotation.png : the rotation-alignment demo -- SIX columns = the odd field
+        separable ∥ lon/lat vs the SAME field rotated 45 deg (separable ∥ diagonal), each shown as
+        a U-velocity | V-velocity | divergence block. The U/V component maps are frame-dependent
+        (they look different between the two experiments even though the flow is one rigidly
+        rotated field); the divergence is isotropic, so the truth is unchanged and only the plane
+        fit moves. Shows that edge exactness is about the field's
+        alignment with the footprint edges, not the shape: the square is exact standard / errs
+        rotated, the diamond (a rotated square) is the mirror image, and the isotropic hexagon
+        errs the same both ways. The diamond is drawn at diameter 1.5*sqrt2 so it is a TRUE 45
+        deg rotation of the 1.5 deg square (same size) -- then its two errors are exactly the
+        square's flipped, unlike the smaller box-inscribed diamond used elsewhere in the study.
   error_vs_width.png        : dense/edge |w err| vs footprint width (log-log, slope-2 guide).
   real_field_shrink.png     : on the real TPOSE24 mean field, shrinking the footprint -- error
         falls to a grid-scale floor then RISES as the plane fit degenerates (NOT -> 0).
@@ -571,6 +582,232 @@ def fig_case(name, shape):
     return fn
 
 
+# --------------------------------------------- rotation-alignment demo (odd field)
+# The odd field U=C x^3, V=C y^3 is separable ALONG lon/lat. Rotate that SAME field 45 deg
+# (with its array) and it is separable along the diagonal instead. Its divergence is the
+# ISOTROPIC 3C(x^2+y^2)=3C r^2, so the TRUE area-mean over any shape is identical for both
+# rotations -- only the plane-fit estimate moves. A footprint is edge-exact only when the
+# field's separability axis lines up with its edges: the square is exact standard / errs
+# rotated, the diamond (a rotated square) is the mirror image, and the more isotropic hexagon
+# errs the SAME both ways. The point: edge exactness is about field-vs-edge alignment, not shape.
+_ROT45 = np.pi / 4.0
+
+
+def _odd_uv(x, y, rot):
+    """Odd velocity (U, V) [m/s]. rot=False: separable along lon/lat (the standard case-3
+    field). rot=True: the same field rotated 45 deg, so it is separable along the diagonal."""
+    x, y = np.asarray(x, float), np.asarray(y, float)
+    if not rot:
+        return C_ODD * x**3, C_ODD * y**3
+    cs = sn = np.cos(_ROT45)
+    xp, yp = x * cs + y * sn, -x * sn + y * cs        # coords in the rotated frame
+    up, vp = C_ODD * xp**3, C_ODD * yp**3             # separable in the rotated frame
+    return up * cs - vp * sn, up * sn + vp * cs       # rotate the vector back to lon/lat
+
+
+def _odd_div_rot(x, y, rot):
+    """Divergence [1/s] of _odd_uv. The trace is rotation invariant, so this is 3C(x'^2+y'^2)
+    in the rotated coords -- the isotropic 3C r^2, hence IDENTICAL for rot=False/True."""
+    x, y = np.asarray(x, float), np.asarray(y, float)
+    if not rot:
+        return (3 * C_ODD * x**2 + 3 * C_ODD * y**2) / M_PER_DEG
+    cs = sn = np.cos(_ROT45)
+    xp, yp = x * cs + y * sn, -x * sn + y * cs
+    return (3 * C_ODD * xp**2 + 3 * C_ODD * yp**2) / M_PER_DEG
+
+
+def _odd_truth(shape, rot, width=WIDTH, nfine=481):
+    """True area-mean divergence [1/s] over the shape polygon (fine masked average)."""
+    from matplotlib.path import Path
+    xs = np.linspace(-width / 2, width / 2, nfine)
+    GX, GY = np.meshgrid(xs, xs)
+    poly = np.array([[p[1], p[0]] for p in ot.footprint_outline(shape, width, width)])
+    inside = Path(poly).contains_points(np.column_stack([GX.ravel(), GY.ravel()])).reshape(GX.shape)
+    return float(np.mean(_odd_div_rot(GX, GY, rot)[inside]))
+
+
+def _odd_planefit_div(offsets, rot):
+    """Plane-fit divergence [1/s] the sampling recovers for the (rotated) odd field."""
+    offs = np.asarray(offsets, float)
+    U, V = _odd_uv(offs[:, 1], offs[:, 0], rot)
+    wx, wy = ot._planefit_slope_weights(offsets, LAT0)
+    return float(wx @ U + wy @ V)
+
+
+def _odd_planefit_plane(offsets, rot, comp=0):
+    """Fitted plane coefficients (a, b, c) of velocity component `comp` (0=U, 1=V) for
+    drawing the plane-fit surface. The divergence estimate uses b of U and c of V."""
+    offs = np.asarray(offsets, float)
+    x_m, y_m = offs[:, 1] * M_PER_DEG, offs[:, 0] * M_PER_DEG
+    F = _odd_uv(offs[:, 1], offs[:, 0], rot)[comp]
+    A = np.column_stack([np.ones_like(x_m), x_m, y_m])
+    coef, *_ = np.linalg.lstsq(A, F, rcond=None)
+    return coef
+
+
+def _fmt_err(v):
+    """Format a w error, snapping grid-noise-level values to +0.00 (avoids a bare -0.00)."""
+    return f'{0.0 if abs(v) < 5e-3 else v:+.2f}'
+
+
+def fig_case_rotation(shape, width=WIDTH):
+    """Rotation-alignment demo for ONE array shape. SIX columns = two odd-field experiments --
+    standard (separable ∥ lon/lat) and the same field rotated 45 deg (separable ∥ diagonal) --
+    each drawn as a THREE-column block (U velocity | V velocity | divergence) over three rows
+    (2-D field, 3-D field, 3-D + plane fit), like fig_case but with both velocity components
+    shown. The U and V component maps are frame-dependent, so they look different between the two
+    experiments even though the flow is the SAME field rigidly rotated; the divergence is the
+    isotropic 3C r^2 and is IDENTICAL across the experiments, so only the flat plane-fit moves.
+    Edge sampling is exact only where the field's separability axis lines up with the footprint
+    edges: the square is exact standard / errs rotated, the diamond (rotated square) is the mirror
+    image, and the isotropic hexagon errs the same both ways. `width` sets the footprint box
+    (deg); the diamond is drawn at width=1.5*sqrt2 so it is a TRUE 45 deg rotation of the 1.5 deg
+    square (same size), which makes its two errors the square's flipped. Saved to
+    test_figs/<shape>/mechanism_odd_rotation.png."""
+    from matplotlib.lines import Line2D
+    from matplotlib.patches import Patch, Polygon as MplPolygon
+
+    half = width / 2
+    pad = 0.15
+    DS = 1e6                                              # divergence shown in 1e-6 s^-1
+    gx = np.linspace(-half - pad, half + pad, 141); GX, GY = np.meshgrid(gx, gx)
+    gg = np.linspace(-half, half, 41); GXX, GYY = np.meshgrid(gg, gg)
+    XM, YM = GXX * M_PER_DEG, GYY * M_PER_DEG
+    # shared color limits across both experiments AND both velocity components
+    vmax = max(float(np.nanmax(np.abs(_odd_uv(GX, GY, r)[c])))
+               for r in (False, True) for c in (0, 1))
+    dmax = max(float(np.nanmax(np.abs(_odd_div_rot(GX, GY, r) * DS))) for r in (False, True))
+
+    edge_off = list(ot.footprint_offsets(shape, width, width))
+    dense_off = _shape_dense_offsets(shape, width, width)
+    outline = [(o[1], o[0]) for o in ot.footprint_outline(shape, width, width)]  # (lon,lat)
+    cx = np.array([o[1] for o in edge_off]); cy = np.array([o[0] for o in edge_off])
+
+    fig = plt.figure(figsize=(30.0, 16.8))
+    gs = fig.add_gridspec(3, 6, left=0.045, right=0.975, top=0.885, bottom=0.035,
+                          height_ratios=[1.0, 1.32, 1.32], hspace=0.16, wspace=0.32)
+
+    def _style3d(a, zlabel):
+        a.set_xlabel('lon (deg)', fontsize=8); a.set_ylabel('lat (deg)', fontsize=8)
+        a.set_zlabel(zlabel, fontsize=8); a.tick_params(labelsize=7)
+        a.view_init(elev=22, azim=-67)
+
+    def _vel_column(col, rot, comp, title):
+        """A velocity-component block (comp: 0=U, 1=V): 2-D map, 3-D surface, 3-D + plane fits."""
+        F2 = _odd_uv(GX, GY, rot)[comp]
+        Fs = _odd_uv(GXX, GYY, rot)[comp]
+        Fc = _odd_uv(cx, cy, rot)[comp]
+        cE = _odd_planefit_plane(edge_off, rot, comp)
+        cD = _odd_planefit_plane(dense_off, rot, comp)
+        Pe = cE[0] + cE[1] * XM + cE[2] * YM
+        Pd = cD[0] + cD[1] * XM + cD[2] * YM
+        zlab = 'U (m s$^{-1}$)' if comp == 0 else 'V (m s$^{-1}$)'
+        a2 = fig.add_subplot(gs[0, col])
+        aa = fig.add_subplot(gs[1, col], projection='3d')
+        ab = fig.add_subplot(gs[2, col], projection='3d')
+        _cbar(a2, a2.pcolormesh(gx, gx, F2, cmap='RdBu_r', vmin=-vmax, vmax=vmax,
+                                shading='auto'), zlab)
+        a2.add_patch(MplPolygon(outline, closed=True, fill=False, ec='k', lw=1.3))
+        a2.scatter(cx, cy, s=55, c='lime', ec='k', lw=1.0, zorder=5)
+        a2.set_xlim(gx[0], gx[-1]); a2.set_ylim(gx[0], gx[-1]); a2.set_aspect('equal')
+        a2.set_xlabel('lon offset (deg)'); a2.set_ylabel('lat offset (deg)')
+        a2.set_title(title, fontsize=12, fontweight='bold')
+        aa.plot_surface(GXX, GYY, Fs, cmap='RdBu_r', vmin=-vmax, vmax=vmax,
+                        linewidth=0, antialiased=True)
+        aa.scatter(cx, cy, Fc, c='lime', edgecolor='k', s=42, depthshade=False)
+        _style3d(aa, zlab)
+        ab.plot_surface(GXX, GYY, Fs, color='0.6', alpha=0.25, linewidth=0)
+        ab.plot_wireframe(GXX, GYY, Pe, color=C_EDGE, rstride=8, cstride=8, lw=2.0)
+        ab.plot_wireframe(GXX, GYY, Pd, color=C_DENSE, rstride=8, cstride=8, lw=2.0)
+        ab.scatter(cx, cy, Fc, c='lime', edgecolor='k', s=42, depthshade=False)
+        _style3d(ab, zlab)
+        return a2, aa, ab
+
+    def _div_column(col, rot):
+        """The divergence block, and the dense/edge w errors."""
+        truth = _odd_truth(shape, rot, width)
+        dense_div = _odd_planefit_div(dense_off, rot)
+        edge_div = _odd_planefit_div(edge_off, rot)
+        D2 = _odd_div_rot(GX, GY, rot) * DS
+        Ds = _odd_div_rot(GXX, GYY, rot) * DS
+        Dc = _odd_div_rot(cx, cy, rot) * DS
+        a2 = fig.add_subplot(gs[0, col])
+        aa = fig.add_subplot(gs[1, col], projection='3d')
+        ab = fig.add_subplot(gs[2, col], projection='3d')
+        _cbar(a2, a2.pcolormesh(gx, gx, D2, cmap='PuOr_r', vmin=-dmax, vmax=dmax,
+                                shading='auto'), 'div (10$^{-6}$ s$^{-1}$)')
+        a2.add_patch(MplPolygon(outline, closed=True, fill=False, ec='k', lw=1.3))
+        a2.scatter(cx, cy, s=55, c='lime', ec='k', lw=1.0, zorder=5)
+        a2.set_xlim(gx[0], gx[-1]); a2.set_ylim(gx[0], gx[-1]); a2.set_aspect('equal')
+        a2.set_xlabel('lon offset (deg)'); a2.set_ylabel('lat offset (deg)')
+        a2.set_title('divergence', fontsize=12, fontweight='bold')
+        aa.plot_surface(GXX, GYY, Ds, cmap='PuOr_r', vmin=-dmax, vmax=dmax,
+                        linewidth=0, antialiased=True)
+        aa.scatter(cx, cy, Dc, c='lime', edgecolor='k', s=42, depthshade=False)
+        _style3d(aa, 'div (10$^{-6}$ s$^{-1}$)')
+        ab.plot_surface(GXX, GYY, Ds, color='0.6', alpha=0.25, linewidth=0)
+        ab.plot_wireframe(GXX, GYY, np.full_like(Ds, edge_div * DS), color=C_EDGE,
+                          rstride=8, cstride=8, lw=2.0)
+        ab.plot_wireframe(GXX, GYY, np.full_like(Ds, dense_div * DS), color=C_DENSE,
+                          rstride=8, cstride=8, lw=2.0)
+        ab.plot_surface(GXX, GYY, np.full_like(Ds, truth * DS), color=C_AREA,
+                        alpha=0.55, linewidth=0)
+        ab.scatter(cx, cy, Dc, c='lime', edgecolor='k', s=42, depthshade=False)
+        _style3d(ab, 'div (10$^{-6}$ s$^{-1}$)')
+        wd = DEPTH_M * (dense_div - truth) * 86400.0
+        we = DEPTH_M * (edge_div - truth) * 86400.0
+        return (a2, aa, ab), wd, we
+
+    def _experiment(col0, rot, label, xmid):
+        vel = _vel_column(col0, rot, 0, 'U velocity')
+        _vel_column(col0 + 1, rot, 1, 'V velocity')
+        div_axes, wd, we = _div_column(col0 + 2, rot)
+        win = ('edge' if abs(we) < abs(wd) - 1e-6 else
+               'dense' if abs(wd) < abs(we) - 1e-6 else 'tie')
+        fig.text(xmid, 0.955, label, ha='center', va='center', fontsize=13, fontweight='bold')
+        fig.text(xmid, 0.915, f'w error:  dense {_fmt_err(wd)} · edge {_fmt_err(we)} m/day   '
+                 f'({"tie" if win == "tie" else win + " wins"})',
+                 ha='center', va='center', fontsize=11)
+        return vel, div_axes
+
+    vel0, _ = _experiment(0, False, 'standard odd:  U = C x³,  V = C y³\nseparable ∥ lon/lat', 0.265)
+    vel3, div3 = _experiment(3, True, 'rotated odd:  same field turned 45°\nseparable ∥ diagonal', 0.735)
+
+    # legends once: velocity on the rotated V-velocity row-3 axis, divergence on its row-3 axis
+    edge_h = Line2D([0], [0], color=C_EDGE, lw=2, marker='s', markerfacecolor='none',
+                    markersize=7, label='edge plane fit')
+    dense_h = Line2D([0], [0], color=C_DENSE, lw=2, marker='s', markerfacecolor='none',
+                     markersize=7, label='dense plane fit')
+    true_h = Patch(fc='0.6', alpha=0.35, label='true field')
+    mean_h = Patch(fc=C_AREA, alpha=0.55, label='true mean')
+    glider_h = Line2D([0], [0], marker='o', color='w', markerfacecolor='lime',
+                      markeredgecolor='k', label='gliders')
+    vel3[2].legend(handles=[true_h, edge_h, dense_h, glider_h], fontsize=8,
+                   loc='upper left', bbox_to_anchor=(-0.04, 1.03))
+    div3[2].legend(handles=[true_h, edge_h, dense_h, mean_h, glider_h], fontsize=8,
+                   loc='upper left', bbox_to_anchor=(-0.04, 1.03))
+
+    # row labels down the far-left margin (from the standard-experiment U column)
+    for ax, lab in ((vel0[0], '2-D field'), (vel0[1], '3-D field'), (vel0[2], '3-D + plane fit')):
+        p = ax.get_position()
+        fig.text(0.014, p.y0 + p.height / 2, lab, rotation=90, ha='center', va='center',
+                 fontweight='bold', fontsize=11)
+
+    fig.add_artist(Line2D([0.508, 0.508], [0.03, 0.9], color='0.8', lw=1.3, ls='--'))
+    size_note = (f'   (diamond = the 1.5° square rotated 45°: diagonal {width:.2f}°, so its two '
+                 'errors are the square’s flipped)' if shape == 'diamond' else '')
+    fig.text(0.5, 0.988, f'{SHAPE_DIR[shape]} array — odd field, standard vs 45° rotation:  '
+             'edge exactness follows the field-to-edge alignment, not the shape' + size_note,
+             ha='center', va='center', fontsize=15, fontweight='bold')
+
+    subdir = os.path.join(FIGDIR, SHAPE_DIR[shape])
+    os.makedirs(subdir, exist_ok=True)
+    fn = os.path.join(subdir, 'mechanism_odd_rotation.png')
+    fig.savefig(fn, dpi=130, bbox_inches='tight')
+    plt.close(fig)
+    return fn
+
+
 def fig_error_vs_width(widths=(0.5, 0.7, 0.9, 1.1, 1.3, 1.5)):
     """|w err| vs footprint width (log-log, slope-2 guide). For the mixed (non-separable)
     field EDGE-sampling stays above DENSE at every size (the persistent sparse penalty); the
@@ -682,6 +919,8 @@ def main():
     for shape in FIG_SHAPES:
         for name in CASE_ORDER:
             print('  ', fig_case(name, shape))
+        # diamond is scaled to sqrt2*width so it is a TRUE 45 deg rotation of the square
+        print('  ', fig_case_rotation(shape, WIDTH * np.sqrt(2) if shape == 'diamond' else WIDTH))
     print('  ', fig_error_vs_width())
     print('  ', fig_real_field_shrink())
 
