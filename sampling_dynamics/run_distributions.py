@@ -26,6 +26,7 @@ import re
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
+from matplotlib.offsetbox import AnchoredOffsetbox, TextArea, VPacker
 from scipy.stats import skewnorm
 
 import common as C
@@ -171,9 +172,10 @@ def _fit_samples_uv(diam, z, shape='symhex'):
 def _bimodal_fit(data, xx, n_iter=300, seed=0):
     """2-component Gaussian mixture via a compact 1-D EM (no sklearn dependency).
 
-    Returns (mixture pdf on xx, peak separation |mu2 - mu1|).  Used for the u'/v'
-    rows, whose oscillatory (TIW/eddy) dynamics give a genuinely bimodal PDF that a
-    single skew-normal cannot represent.
+    Returns (mixture pdf on xx, [(mu, sigma), (mu, sigma)] sorted by mu).  Used for the
+    u'/v' rows, whose oscillatory (TIW/eddy) dynamics give a genuinely bimodal PDF that a
+    single skew-normal cannot represent; the two component means/stds describe the two
+    lobes directly.
     """
     from scipy.stats import norm
     x = np.asarray(data)[np.isfinite(data)]
@@ -188,7 +190,9 @@ def _bimodal_fit(data, xx, n_iter=300, seed=0):
         mu = (r * x).sum(1) / nk
         var = (r * (x - mu[:, None]) ** 2).sum(1) / nk + 1e-12
     pdf = sum(w[k] * norm.pdf(xx, mu[k], np.sqrt(var[k])) for k in range(2))
-    return pdf, abs(mu[1] - mu[0])
+    order = np.argsort(mu)                                # report left lobe first
+    comps = [(float(mu[k]), float(np.sqrt(var[k]))) for k in order]
+    return pdf, comps
 
 
 def _fit_grid(out, per_col, cols, col_title, fname, bimodal_labels=frozenset(),
@@ -219,24 +223,32 @@ def _fit_grid(out, per_col, cols, col_title, fname, bimodal_labels=frozenset(),
             ax = axes[ri, ci]
             o, t = per_col[col][lab]
             arr_color = col_colors[col] if col_colors else '#08306b'
+            notes = []                                   # (text, colour) per series
             for data, color, name in [(t, '0.5', 'truth'), (o, arr_color, 'array')]:
                 data = data[np.isfinite(data)]
                 kw = dict(alpha=0.5) if name == 'truth' else dict(histtype='step', lw=2.2)
                 ax.hist(data, bins=bins, density=True, color=color, **kw)
-                if bimodal:                              # 2-Gaussian mixture -> peak separation
-                    pdf, sep = _bimodal_fit(data, xx)
-                    note = f'{name}: $\\Delta$peak={sep:.2g}'
-                else:                                    # skew-normal -> shape parameter a
+                if bimodal:                              # 2-Gaussian mixture -> per-lobe mean/std
+                    pdf, comps = _bimodal_fit(data, xx)
+                    (m1, s1), (m2, s2) = comps
+                    note = (f'{name}: $\\mu_1$={m1:.2g}, $\\sigma_1$={s1:.2g}, '
+                            f'$\\mu_2$={m2:.2g}, $\\sigma_2$={s2:.2g}')
+                else:                                    # skew-normal -> mean, std, shape a
                     a, loc, sc = skewnorm.fit(data)
                     pdf = skewnorm.pdf(xx, a, loc, sc)
-                    note = f'{name}: skew a={a:.2f}'
+                    note = (f'{name}: $\\mu$={np.mean(data):.2g}, '
+                            f'$\\sigma$={np.std(data):.2g}, skew a={a:.2f}')
                 ax.plot(xx, pdf, color=color, lw=1.6, ls='--')
-                # right-aligned in the (typically emptier) upper-right corner with a light
-                # background so it never sits on the data
-                ax.text(0.97, 0.97 - (0.14 if name == 'array' else 0), note,
-                        transform=ax.transAxes, va='top', ha='right', color=color,
-                        fontsize=8.5,
-                        bbox=dict(boxstyle='round,pad=0.15', fc='white', ec='none', alpha=0.65))
+                notes.append((note, color))
+            # a single bordered inset box in the (usually emptier) upper-LEFT corner,
+            # one colour-coded line per series, so it never sits on the data
+            box = AnchoredOffsetbox(
+                loc='upper left', frameon=True, pad=0.3, borderpad=0.3,
+                bbox_to_anchor=(0.0, 1.0), bbox_transform=ax.transAxes,
+                child=VPacker(pad=0, sep=2, align='left', children=[
+                    TextArea(n, textprops=dict(color=c, fontsize=8.0)) for n, c in notes]))
+            box.patch.set(boxstyle='round,pad=0.25', fc='white', ec='0.6', alpha=0.85)
+            ax.add_artist(box)
             ax.set_xlim(lo, hi)
             P.tidy_x(ax, 4)
             if ri == 0:
@@ -246,6 +258,11 @@ def _fit_grid(out, per_col, cols, col_title, fname, bimodal_labels=frozenset(),
             if ci == 0:
                 name = re.sub(r'\s*\([^()]*\)\s*$', '', lab)   # y-axis: name only, no units
                 ax.set_ylabel(f'{name}\ndensity')
+        # add headroom above the tallest peak in the row (shared y) so the upper-left
+        # stats box sits over empty space, not on the distribution
+        row_top = max(a.get_ylim()[1] for a in axes[ri, :])
+        for a in axes[ri, :]:
+            a.set_ylim(top=row_top * 1.42)
     # pack the axes up to the figure top, reserving only a thin strip for the legend so
     # tall (many-row) grids don't leave a big empty band under the legend
     fig_h = 3.4 * nr
