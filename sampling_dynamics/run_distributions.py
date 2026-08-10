@@ -15,6 +15,8 @@ Figures -> distributions/
   js_summary.png                   JS - JS_null vs diameter, one line per variable.
   moment_recovery.png              std ratio and skew, array vs truth, vs diameter.
   fit_distributions.png            skew-normal fits to w, T' and w'T', array vs truth.
+  fit_distributions_shapes_d1.png  the same fits with columns = diamond/square/hexagon
+                                   (equatorial regular arrays) at fixed 1deg diameter.
 
 Usage:  python run_distributions.py
 """
@@ -123,10 +125,11 @@ def fig_moment_recovery(out, z=None):
 
 
 # --------------------------------------------------------------------------- fig 4
-def _fit_samples(diam, z):
-    """(array, truth) 1-D samples of w, T', w'T' and w'u' at depth z for one diameter."""
+def _fit_samples(diam, z, shape='symhex'):
+    """(array, truth) 1-D samples of w, T', w'T' and w'u' at depth z for one config."""
     import run_transport as T
-    arr = P.load_array(diam); hull = P.load_hull(diam); cloud = P.load_cloud(diam)
+    arr = P.load_array(diam, shape); hull = P.load_hull(diam, shape)
+    cloud = P.load_cloud(diam, shape)
 
     def anom(ds):                                       # pooled T fluctuation about time mean
         a = (ds['T'] - ds['T'].mean('time')).interp(obs_depth=z)
@@ -143,10 +146,11 @@ def _fit_samples(diam, z):
             "$w'T'$ (W m$^{-2}$)": wT, "$w'u'$ (m$^2$ s$^{-2}$)": wU}
 
 
-def _fit_samples_uv(diam, z):
+def _fit_samples_uv(diam, z, shape='symhex'):
     """(array, truth) 1-D samples of u', v' and the lateral fluxes u'v', u'T', v'T'."""
     import run_transport as T
-    arr = P.load_array(diam); hull = P.load_hull(diam); cloud = P.load_cloud(diam)
+    arr = P.load_array(diam, shape); hull = P.load_hull(diam, shape)
+    cloud = P.load_cloud(diam, shape)
 
     def anom(ds, var):                                  # pooled temporal fluctuation
         a = (ds[var] - ds[var].mean('time')).interp(obs_depth=z)
@@ -187,29 +191,35 @@ def _bimodal_fit(data, xx, n_iter=300, seed=0):
     return pdf, abs(mu[1] - mu[0])
 
 
-def _fit_grid(out, per_diam, fname, bimodal_labels=frozenset()):
-    """Render a distribution-fit grid: rows = quantities, cols = diameters.
+def _fit_grid(out, per_col, cols, col_title, fname, bimodal_labels=frozenset(),
+              col_colors=None):
+    """Render a distribution-fit grid: rows = quantities, cols = configs.
 
-    Rows in `bimodal_labels` get a 2-Gaussian mixture (report peak separation);
-    all others get a skew-normal (report the shape parameter a).
+    `per_col` maps each column key to its {label: (array, truth)} samples, `cols` is
+    the ordered column keys, and `col_title(key)` is the column heading.  Rows in
+    `bimodal_labels` get a 2-Gaussian mixture (report peak separation); all others get
+    a skew-normal (report the shape parameter a).  When `col_colors` (col key -> color)
+    is given the ARRAY histogram/fit is drawn in that column's colour (truth stays grey)
+    and the legend keys the colours by column instead of a single array swatch.
     """
-    labels = list(per_diam[C.DIAMETERS[0]])
+    labels = list(per_col[cols[0]])
     xlims = {}                                          # shared per-row x-limits
     for lab in labels:
-        allv = np.concatenate([np.concatenate(per_diam[d][lab]) for d in C.DIAMETERS])
+        allv = np.concatenate([np.concatenate(per_col[c][lab]) for c in cols])
         allv = allv[np.isfinite(allv)]
         xlims[lab] = np.percentile(allv, [0.5, 99.5])
-    nc = len(C.DIAMETERS); nr = len(labels)
+    nc = len(cols); nr = len(labels)
     fig, axes = plt.subplots(nr, nc, figsize=(3.6 * nc, 3.4 * nr), sharey='row',
                              squeeze=False)
     for ri, lab in enumerate(labels):
         lo, hi = xlims[lab]
         bins = np.linspace(lo, hi, 45); xx = np.linspace(lo, hi, 200)
         bimodal = lab in bimodal_labels
-        for ci, d in enumerate(C.DIAMETERS):
+        for ci, col in enumerate(cols):
             ax = axes[ri, ci]
-            o, t = per_diam[d][lab]
-            for data, color, name in [(t, '0.5', 'truth'), (o, '#08306b', 'array')]:
+            o, t = per_col[col][lab]
+            arr_color = col_colors[col] if col_colors else '#08306b'
+            for data, color, name in [(t, '0.5', 'truth'), (o, arr_color, 'array')]:
                 data = data[np.isfinite(data)]
                 kw = dict(alpha=0.5) if name == 'truth' else dict(histtype='step', lw=2.2)
                 ax.hist(data, bins=bins, density=True, color=color, **kw)
@@ -230,7 +240,7 @@ def _fit_grid(out, per_diam, fname, bimodal_labels=frozenset()):
             ax.set_xlim(lo, hi)
             P.tidy_x(ax, 4)
             if ri == 0:
-                ax.set_title(f'{d:g}$^\\circ$ footprint')
+                ax.set_title(col_title(col))
             m = re.search(r'\(([^()]*)\)\s*$', lab)       # x-axis: units only, no name
             ax.set_xlabel(m.group(1) if m else lab)
             if ci == 0:
@@ -241,17 +251,37 @@ def _fit_grid(out, per_diam, fname, bimodal_labels=frozenset()):
     fig_h = 3.4 * nr
     top = 1.0 - 0.5 / fig_h
     fig.tight_layout(rect=[0, 0, 1, top])
-    fig.legend(handles=[Line2D([0], [0], color='0.5', lw=8, alpha=0.5, label='truth hist'),
-                        Line2D([0], [0], color='#08306b', lw=2.2, label='array hist'),
-                        Line2D([0], [0], color='0.3', lw=1.6, ls='--', label='distribution fit')],
-               loc='upper center', ncol=3, frameon=False, bbox_to_anchor=(0.5, 1.0))
+    if col_colors:                                      # per-column (shape) array colours
+        handles = [Line2D([0], [0], color='0.5', lw=8, alpha=0.5, label='truth hist'),
+                   Line2D([0], [0], color='0.3', lw=1.6, ls='--', label='distribution fit')]
+        handles += [Line2D([0], [0], color=col_colors[c], lw=2.4, label=col_title(c))
+                    for c in cols]
+    else:
+        handles = [Line2D([0], [0], color='0.5', lw=8, alpha=0.5, label='truth hist'),
+                   Line2D([0], [0], color='#08306b', lw=2.2, label='array hist'),
+                   Line2D([0], [0], color='0.3', lw=1.6, ls='--', label='distribution fit')]
+    fig.legend(handles=handles, loc='upper center', ncol=len(handles), frameon=False,
+               bbox_to_anchor=(0.5, 1.0))
     return P.finish(fig, f'{out}/{fname}')
 
 
+# shapes compared side by side at fixed diameter: diamond, square, hexagon
+SHAPES = ['symdia', 'symsq', 'symhex']
+UV_BIMODAL = {"$u'$ (m s$^{-1}$)", "$v'$ (m s$^{-1}$)"}
+
+
+def _diam_title(d):
+    return f'{d:g}$^\\circ$ footprint'
+
+
+def _shape_title(diam):
+    return lambda s: f'{C.SHAPE_LABEL[s]} ({diam:g}$^\\circ$)'
+
+
 def fig_fit(out, z=DEPTH):
-    """Skew-normal fits to w, w'T', w'u' (rows), one column per diameter (30 m)."""
+    """Skew-normal fits to w, T', w'T', w'u' (rows), one column per diameter (30 m)."""
     per_diam = {d: _fit_samples(d, z) for d in C.DIAMETERS}
-    return _fit_grid(out, per_diam, 'fit_distributions.png')
+    return _fit_grid(out, per_diam, C.DIAMETERS, _diam_title, 'fit_distributions.png')
 
 
 def fig_fit_uv(out, z=DEPTH):
@@ -261,8 +291,27 @@ def fig_fit_uv(out, z=DEPTH):
     keep the skew-normal.
     """
     per_diam = {d: _fit_samples_uv(d, z) for d in C.DIAMETERS}
-    bimodal = {"$u'$ (m s$^{-1}$)", "$v'$ (m s$^{-1}$)"}
-    return _fit_grid(out, per_diam, 'fit_distributions_uv.png', bimodal_labels=bimodal)
+    return _fit_grid(out, per_diam, C.DIAMETERS, _diam_title, 'fit_distributions_uv.png',
+                     bimodal_labels=UV_BIMODAL)
+
+
+def fig_fit_shapes(out, diam=FLAGSHIP, z=DEPTH):
+    """Cross-shape comparison of w, T', w'T', w'u' fits at fixed diameter.
+
+    Columns = diamond / square / hexagon (all centred at 0degN,140degW); the equatorial
+    regular arrays sampling the SAME nominal footprint.
+    """
+    per_col = {s: _fit_samples(diam, z, s) for s in SHAPES}
+    return _fit_grid(out, per_col, SHAPES, _shape_title(diam),
+                     f'fit_distributions_shapes_d{diam:g}.png', col_colors=C.SHAPE_COLOR)
+
+
+def fig_fit_shapes_uv(out, diam=FLAGSHIP, z=DEPTH):
+    """Cross-shape comparison of u', v', u'v', u'T', v'T' fits at fixed diameter."""
+    per_col = {s: _fit_samples_uv(diam, z, s) for s in SHAPES}
+    return _fit_grid(out, per_col, SHAPES, _shape_title(diam),
+                     f'fit_distributions_shapes_uv_d{diam:g}.png', bimodal_labels=UV_BIMODAL,
+                     col_colors=C.SHAPE_COLOR)
 
 
 def main():
@@ -273,6 +322,8 @@ def main():
     print(fig_moment_recovery(out))
     print(fig_fit(out))
     print(fig_fit_uv(out))
+    print(fig_fit_shapes(out))
+    print(fig_fit_shapes_uv(out))
 
 
 if __name__ == '__main__':

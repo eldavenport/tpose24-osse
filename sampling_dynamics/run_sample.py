@@ -60,21 +60,22 @@ def _eddy_flux_series(sel, pairs):
     return xr.Dataset(out)
 
 
-def compute_config(ds, region, diam):
-    name = C.config_name(diam)
-    gliders = C.glider_positions(diam)
-    positions = C.array_positions(diam)
+def compute_config(ds, region, diam, shape='symhex'):
+    name = C.config_name(diam, shape)
+    gliders = C.glider_positions(diam, shape)
+    positions = C.array_positions(diam, shape)
     sys.stderr.write(f'[{name}] sampling array ({len(positions)} pts)\n'); sys.stderr.flush()
 
-    # ---- array: fields at the 6 gliders + centre mooring, plus plane-fit w ----
+    # ---- array: fields at the shape gliders + centre mooring, plus plane-fit w ----
     arr = C.sample_array(ds, positions).compute()
     is_moor = np.zeros(len(positions), bool)
-    is_moor[C.mooring_index(diam)] = True
+    is_moor[C.mooring_index(diam, shape)] = True
     arr = arr.assign_coords(is_mooring=('glider', is_moor))
     w_est, w_est_mid = _plane_fit_w(arr)
     arr['w_est'] = w_est
     arr['w_est_mid'] = w_est_mid
-    arr.attrs.update(config=name, diameter=diam, mooring_index=C.mooring_index(diam))
+    arr.attrs.update(config=name, diameter=diam, shape=shape,
+                     mooring_index=C.mooring_index(diam, shape))
     arr.to_netcdf(os.path.join(C.CACHE_DIR, f'{name}_array.nc'))
     sys.stderr.write(f'[{name}] wrote array.nc\n'); sys.stderr.flush()
 
@@ -102,19 +103,24 @@ def compute_config(ds, region, diam):
     sys.stderr.flush()
 
 
-def main(diams):
-    half = max(C.DIAMETERS) / 2
+def main(diams, shapes=('symhex',)):
+    half = max(list(diams) + list(C.DIAMETERS)) / 2
     ds = C.load_bbox_memory(half)          # read the bbox once, into memory
     sys.stderr.write(f'bbox loaded into memory: {dict(ds.sizes)}\n'); sys.stderr.flush()
     region = C.region_bbox(ds, half_deg=half)
     sys.stderr.write(f'region bbox built: {region.sizes["point"]} points\n')
     sys.stderr.flush()
-    for d in diams:
-        compute_config(ds, region, d)
+    for shape in shapes:
+        for d in diams:
+            compute_config(ds, region, d, shape)
     sys.stderr.write('DONE\n')
 
 
 if __name__ == '__main__':
+    # args: shape names (symhex/symsq/symdia) and/or diameters (d1.0 ...).
+    # defaults: symhex family over all C.DIAMETERS.
     args = sys.argv[1:]
-    diams = [float(a.lstrip('d')) for a in args] if args else C.DIAMETERS
-    main(diams)
+    shapes = [a for a in args if a in C.SHAPE_LABEL] or ['symhex']
+    diams = [float(a.lstrip('d')) for a in args if a.lstrip('d')[:1].isdigit()]
+    diams = diams or C.DIAMETERS
+    main(diams, shapes)

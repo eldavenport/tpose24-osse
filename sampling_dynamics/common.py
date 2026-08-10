@@ -49,7 +49,8 @@ import osse_tools as ot
 # --------------------------------------------------------------------------- paths
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
-CONFIG_DIR = os.path.join(REPO, 'experiments', 'experiment_1', 'configs', 'symhex')
+CONFIG_BASE = os.path.join(REPO, 'experiments', 'experiment_1', 'configs')
+CONFIG_DIR = os.path.join(CONFIG_BASE, 'symhex')      # default (symhex) family
 CACHE_DIR = os.path.join(HERE, 'cache')
 
 RUN_DIR = '/data/SO3/edavenport/tpose24/oct2012_3mo_dt60_AB3'
@@ -100,28 +101,37 @@ def _register_kpp_vars():
 _register_kpp_vars()
 
 # ============================================================ configuration helpers
-def config_path(diam):
-    """Path to the symhex centre-0 config JSON for an E-W diameter (deg)."""
-    return os.path.join(CONFIG_DIR, f'symhex_d{diam}_c+0.0.json')
+# shape family -> human-readable name.  All three are REGULAR arrays centred at
+# 0degN,140degW; symhex has 6 gliders, symsq/symdia have 4.  A TAO mooring is added at
+# the centre of each (interior, so the convex-hull truth footprint is unchanged).
+SHAPE_LABEL = {'symhex': 'hexagon', 'symsq': 'square', 'symdia': 'diamond'}
+# shape family -> color, matching the equator/heat-flux/pdf-sampling convention
+# (diamond blue, square red, hexagon green)
+SHAPE_COLOR = {'symdia': '#1f77b4', 'symsq': '#d62728', 'symhex': '#2ca02c'}
 
 
-def config_name(diam):
-    return f'symhex_d{diam}_c+0.0'
+def config_path(diam, shape='symhex'):
+    """Path to a centre-0 shape config JSON for an E-W diameter (deg)."""
+    return os.path.join(CONFIG_BASE, shape, f'{shape}_d{diam}_c+0.0.json')
 
 
-def glider_positions(diam):
-    """The 6 hexagon glider positions [(lat, lon), ...] for a diameter."""
-    return ot.load_positions(config_path(diam))
+def config_name(diam, shape='symhex'):
+    return f'{shape}_d{diam}_c+0.0'
 
 
-def array_positions(diam):
-    """Glider hexagon + the centre TAO mooring (7 interior sample points)."""
-    return glider_positions(diam) + [MOORING]
+def glider_positions(diam, shape='symhex'):
+    """The regular-shape glider positions [(lat, lon), ...] for a diameter."""
+    return ot.load_positions(config_path(diam, shape))
 
 
-def mooring_index(diam):
+def array_positions(diam, shape='symhex'):
+    """Glider shape + the centre TAO mooring (interior sample point)."""
+    return glider_positions(diam, shape) + [MOORING]
+
+
+def mooring_index(diam, shape='symhex'):
     """Index of the mooring within array_positions (it is appended last)."""
-    return len(glider_positions(diam))
+    return len(glider_positions(diam, shape))
 
 
 def all_configs():

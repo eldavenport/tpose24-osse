@@ -24,6 +24,12 @@ E-W diameter 0.3 / 0.5 / 0.75 / 1.0°, 6 gliders each. Add the TAO mooring at th
 the convex hull (the truth footprint) is unchanged. Diameters are colored light→dark
 with size in every figure.
 
+The regular `symsq` (square, 4 corners) and `symdia` (diamond, 4 vertices) families,
+same center 0°N,140°W and same `+0.0` config naming, are also sampled at 1° diameter for
+a **cross-shape comparison** (`run_sample.py symsq symdia d1.0`). `common.py` / `sd_plot.py`
+take an optional `shape=` argument (default `symhex`), so any diagnostic can be run per
+shape; `run_distributions.py` uses this for the shape-comparison fit figures.
+
 - **Array estimate** — `w`: plane-fit from the array U,V (`compute_w_planefit` defaults,
   extrapolate-to-surface, 8–80 m, like experiment_2). Mean fields: mean over
   the 6 gliders + mooring. Eddy fluxes: vertical uses the plane-fit w′ with the
@@ -53,7 +59,7 @@ with size in every figure.
 | `run_w.py` | `vertical_velocity/` | w(z) mean/std/`r`, time-mean ±95% CI (autocorr-aware), w Hovmöller, max/min/mean/median stats |
 | `run_mixing.py` | `mixing/` | κ_T, ν, N² profiles; KPP boundary-layer depth time series + distribution; κ_T Hovmöller with hbl; intermittency stats |
 | `run_transport.py` | `transport/` | vertical (w′T′, w′u′, w′v′) + lateral (u′T′, v′T′, u′v′) eddy-flux mean profiles, array-vs-truth correlation r(z), w′T′ Hovmöller |
-| `run_distributions.py` | `distributions/` | array-vs-truth PDFs (JS + Wasserstein vs a random-placement null), JS summary vs diameter, moment recovery, skew-normal fits |
+| `run_distributions.py` | `distributions/` | array-vs-truth PDFs (JS + Wasserstein vs a random-placement null), JS summary vs diameter, moment recovery, skew-normal fits (w/T′/w′T′/w′u′ per diameter, plus a diamond/square/hexagon cross-shape comparison at 1°) |
 | `run_spectra.py` | `spectra/` | vertical-wavenumber × frequency PSD of area-mean w and w′T′, true vs array (diurnal + TIW marked) |
 | `run_animations.py` | `animations/` | the field advecting through the footprint at 30 m; w & κ_T profiles evolving in time |
 

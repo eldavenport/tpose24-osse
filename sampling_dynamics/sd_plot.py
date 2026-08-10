@@ -50,16 +50,16 @@ def outdir(sub):
 
 
 # --------------------------------------------------------------------------- loaders
-def load_array(diam):
-    return xr.open_dataset(os.path.join(C.CACHE_DIR, f'{C.config_name(diam)}_array.nc'))
+def load_array(diam, shape='symhex'):
+    return xr.open_dataset(os.path.join(C.CACHE_DIR, f'{C.config_name(diam, shape)}_array.nc'))
 
 
-def load_hull(diam):
-    return xr.open_dataset(os.path.join(C.CACHE_DIR, f'{C.config_name(diam)}_hull.nc'))
+def load_hull(diam, shape='symhex'):
+    return xr.open_dataset(os.path.join(C.CACHE_DIR, f'{C.config_name(diam, shape)}_hull.nc'))
 
 
-def load_cloud(diam):
-    return xr.open_dataset(os.path.join(C.CACHE_DIR, f'{C.config_name(diam)}_cloud.nc'))
+def load_cloud(diam, shape='symhex'):
+    return xr.open_dataset(os.path.join(C.CACHE_DIR, f'{C.config_name(diam, shape)}_cloud.nc'))
 
 
 def have_cache():
