@@ -14,10 +14,12 @@ Figures -> distributions/
                                    annotated JS / Wasserstein and their nulls.
   js_summary.png                   JS - JS_null vs diameter, one line per variable.
   moment_recovery.png              std ratio and skew, array vs truth, vs diameter.
-  fit_distributions.png            skew-normal fits to w and w'T', array vs truth.
+  fit_distributions.png            skew-normal fits to w, T' and w'T', array vs truth.
 
 Usage:  python run_distributions.py
 """
+
+import re
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -122,17 +124,23 @@ def fig_moment_recovery(out, z=None):
 
 # --------------------------------------------------------------------------- fig 4
 def _fit_samples(diam, z):
-    """(array, truth) 1-D samples of w, w'T' and w'u' at depth z for one diameter."""
+    """(array, truth) 1-D samples of w, T', w'T' and w'u' at depth z for one diameter."""
     import run_transport as T
     arr = P.load_array(diam); hull = P.load_hull(diam); cloud = P.load_cloud(diam)
+
+    def anom(ds):                                       # pooled T fluctuation about time mean
+        a = (ds['T'] - ds['T'].mean('time')).interp(obs_depth=z)
+        return np.asarray(a.values).ravel()
+
     w = (np.asarray(arr['w_est_mid'].interp(obs_depth=z).values).ravel() * C.SEC_PER_DAY,
          _pool(cloud, 'W', 'point', z) * C.SEC_PER_DAY)
+    Tp = (anom(arr), anom(cloud))
     wT = (np.asarray(T.array_vert_flux(arr, 'w_est_mid', 'T').interp(obs_depth=z).values).ravel() * C.HFLUX,
           np.asarray(hull['wT'].interp(obs_depth=z).values).ravel() * C.HFLUX)
     wU = (np.asarray(T.array_vert_flux(arr, 'w_est_mid', 'U').interp(obs_depth=z).values).ravel(),
           np.asarray(hull['wU'].interp(obs_depth=z).values).ravel())
-    return {'w (m day$^{-1}$)': w, "$w'T'$ (W m$^{-2}$)": wT,
-            "$w'u'$ (m$^2$ s$^{-2}$)": wU}
+    return {'w (m day$^{-1}$)': w, "$T'$ ($^\\circ$C)": Tp,
+            "$w'T'$ (W m$^{-2}$)": wT, "$w'u'$ (m$^2$ s$^{-2}$)": wU}
 
 
 def _fit_samples_uv(diam, z):
@@ -223,10 +231,11 @@ def _fit_grid(out, per_diam, fname, bimodal_labels=frozenset()):
             P.tidy_x(ax, 4)
             if ri == 0:
                 ax.set_title(f'{d:g}$^\\circ$ footprint')
-            if ri == nr - 1:
-                ax.set_xlabel(lab)
+            m = re.search(r'\(([^()]*)\)\s*$', lab)       # x-axis: units only, no name
+            ax.set_xlabel(m.group(1) if m else lab)
             if ci == 0:
-                ax.set_ylabel(f'{lab}\ndensity')
+                name = re.sub(r'\s*\([^()]*\)\s*$', '', lab)   # y-axis: name only, no units
+                ax.set_ylabel(f'{name}\ndensity')
     # pack the axes up to the figure top, reserving only a thin strip for the legend so
     # tall (many-row) grids don't leave a big empty band under the legend
     fig_h = 3.4 * nr
