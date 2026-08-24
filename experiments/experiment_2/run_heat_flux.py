@@ -59,7 +59,9 @@ MIN_DEPTH  = 8
 MAX_DEPTH  = 80
 DZ_OBS     = 2
 
-DATA_DIR = os.path.join(HERE, 'data_heat')
+# heavy .nc caches live on /data (not /home); see project_sym_disk_truth memory
+CACHE_ROOT = '/data/SO3/edavenport/tpose24-osse/cache'
+DATA_DIR = os.path.join(CACHE_ROOT, 'experiment_2', 'data_heat')
 # Focused set of configs (paths under experiment_1/configs/).
 #  (a) equator single-cell SHAPE sweep: diamond/hexagon/square at 1° and 2° cell
 #      height, each at diameters 0.5/1.0/1.5° (lon offsets 0.25/0.5/0.75).
@@ -79,6 +81,18 @@ SCOPE += [
     os.path.join(EXP1, 'configs', 'shift', 'shift_sq_w0.5.json'),
     os.path.join(EXP1, 'configs', 'shift', 'shift_sq_w0.5_mid.json'),
 ]
+# (c) symmetric REGULAR-hexagon sweep: diameters 0.3/0.5/0.75/1.0° (E-W width) centred
+#     at 0.0/0.5/-0.5°N, no moorings — isotropic footprints, diameter-vs-latitude compare.
+SYMHEX_DIAMS   = ['0.3', '0.5', '0.75', '1.0']
+SYMHEX_CENTERS = ['+0.0', '+0.5', '-0.5']
+SCOPE += [os.path.join(EXP1, 'configs', 'symhex', f'symhex_d{d}_c{c}.json')
+          for d in SYMHEX_DIAMS for c in SYMHEX_CENTERS]
+# (d) symmetric REGULAR diamond & square sweeps — the shape analogues of symhex at the
+#     same diameters and centre latitudes (0.0/0.5/-0.5°N), no moorings — for the
+#     hexagon/diamond/square shape comparison.
+for _fam in ('symdia', 'symsq'):
+    SCOPE += [os.path.join(EXP1, 'configs', _fam, f'{_fam}_d{d}_c{c}.json')
+              for d in SYMHEX_DIAMS for c in SYMHEX_CENTERS]
 KEY_DEPTHS = [25, 50, 70]                    # m; temporal-PDF / summary depths
 
 
@@ -90,8 +104,11 @@ def _to_depth(da):
     return da.rename({'obs_depth': 'depth'}) if 'obs_depth' in da.dims else da
 
 
-def _cell_dataset(ds, pos):
-    """Compute the estimate/truth component & flux series for one cell."""
+def _cell_dataset(ds, pos, disk=None):
+    """Compute the estimate/truth component & flux series for one cell.
+
+    `disk`=(center_lat, center_lon, radius_deg) selects the circular-disk truth for a
+    symmetric-shape config; None falls back to the convex-hull truth."""
     # --- estimate: plane-fit w paired with array-mean glider T ---
     samp = ot.sample_fields(ds, pos, vars=('UVEL', 'VVEL', 'THETA'),
                             max_depth=MAX_DEPTH, dz_obs=DZ_OBS, min_depth=MIN_DEPTH).compute()
@@ -104,7 +121,7 @@ def _cell_dataset(ds, pos):
     # --- truth: full hull-area flux + hull-mean components (native points, depth
     #     interp only — cheap, like sample_model_w) ---
     truth = ot.sample_model_heat_flux(ds, pos, max_depth=MAX_DEPTH, dz_obs=DZ_OBS,
-                                      min_depth=MIN_DEPTH)
+                                      min_depth=MIN_DEPTH, disk=disk)
 
     out = xr.Dataset(dict(
         w_est_mid=_to_depth(w_est_mid),
@@ -188,7 +205,7 @@ def main():
                     ds = ot.load_model(RUN_DIR, ITERS).sel(time=slice(SPINUP_END, None))
                     print(f'Model loaded: {ds.sizes["time"]} timesteps after spin-up')
                 print(f'computing {cfg["name"]} cell {center_lat:+.2f}')
-                _cell_dataset(ds, pos).to_netcdf(nc_path)
+                _cell_dataset(ds, pos, ot.sym_disk(cfg)).to_netcdf(nc_path)
             rows.append(_metrics_row(cfg, center_lat, nc_path))
 
     metrics = pd.DataFrame(rows).sort_values(

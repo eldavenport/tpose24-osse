@@ -105,18 +105,20 @@ def main():
         print('Sampled U,V at pending positions')
 
         # Model-truth w is expensive; compute one per unique pending footprint.
+        # Symmetric-shape configs use the circular-disk truth (ot.sym_disk); all
+        # others fall back to the convex-hull truth (disk=None).
         unique = {}
-        for _, _, pos, _ in pending:
-            unique.setdefault(_footprint_key(pos), pos)
+        for cfg, _, pos, _ in pending:
+            unique.setdefault(_footprint_key(pos), (pos, ot.sym_disk(cfg)))
         print(f'{len(unique)} unique pending footprints -> computing model-truth w')
 
-        def _w_model(pos):
+        def _w_model(pos, disk):
             return ot.sample_model_w(ds, pos, max_depth=MAX_DEPTH, dz_obs=DZ_OBS,
-                                     min_depth=MIN_DEPTH, spatial_mean=True)
+                                     min_depth=MIN_DEPTH, spatial_mean=True, disk=disk)
 
         keys = list(unique)
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
-            w_model_cache = dict(zip(keys, ex.map(lambda k: _w_model(unique[k]), keys)))
+            w_model_cache = dict(zip(keys, ex.map(lambda k: _w_model(*unique[k]), keys)))
         print('Model-truth w computed for pending footprints')
 
         # Estimate w per pending cell, save arrays, and record skill statistics.

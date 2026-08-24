@@ -53,7 +53,9 @@ import osse_tools as ot  # noqa: E402
 ot._GRID.setdefault('WVEL', ('XC', 'YC'))
 
 # --------------------------------------------------------------------------- paths
-CACHE_DIR = os.path.join(HERE, 'cache')
+# heavy .nc caches live on /data (not /home); see project_sym_disk_truth memory
+CACHE_ROOT = '/data/SO3/edavenport/tpose24-osse/cache'
+CACHE_DIR = os.path.join(CACHE_ROOT, 'experiment_3')
 DATA_DIR = os.path.join(HERE, 'data')
 
 # --------------------------------------------------------------------------- model run

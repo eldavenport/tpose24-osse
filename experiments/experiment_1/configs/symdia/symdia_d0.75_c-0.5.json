@@ -4,11 +4,13 @@
   "pattern": "symdia_d0.75",
   "width": 0.375,
   "diameter": 0.75,
+  "radius": 0.375,
   "center_lat": -0.5,
+  "center_lon": 220.0,
   "n_gliders_per_cell": 4,
   "n_gliders_total": 4,
   "cell_height_deg": 0.75,
-  "description": "Symmetric REGULAR diamond, 0.75deg E-W diameter (lon offset 0.375), centred at -0.5N, 4 gliders, no moorings.",
+  "description": "Symmetric REGULAR diamond, 4 vertices on the truth circle of radius 0.375deg (diameter 0.75deg), centred at -0.5N/220E, no moorings.",
   "positions": [
     [
       -0.125,

@@ -94,3 +94,33 @@ mean-recovery scatters carry their own in-panel legend for the markers they use.
    intervals, to show how well the time-mean upwelling is resolved and recovered
    
    NOTE -- w decorrelates in ~1 day (8-13 3-hour samples)
+
+## Symmetric regular-shape sweep (sym_sweep) — same figures as experiment_2
+
+The `configs/{symhex,symdia,symsq}/` families (regular hexagon/diamond/square,
+E-W diameter 0.3/0.5/0.75/1.0°, centres 0.0/±0.5°N, glider-only, no moorings) run
+through the whole exp1 pipeline under exp1's w method (no surface extrapolation, w=0
+at 8 m, 8–70 m column) — mirroring the experiment_2 `sym_sweep` deliverables.
+
+- **W-skill** — `run_experiment.py` picks the sym configs up automatically (the
+  `configs/**` glob), and `summary.ipynb`'s final cell writes `summary_figs/sym_sweep/`:
+  per-family w-skill vs E-W diameter (`fig_<fam>_skill_vs_diameter.png`, one line per
+  centre), est-vs-true w scatter (`fig_<fam>_w_scatter.png` + `fig_sym_w_scatter_deepest.png`),
+  the fig7 ⟨w⟩ ±95% CI profiles (`fig7_<fam>_d1.png`, `fig7_sym_shapes_c<lat>_d1.png`), the
+  shape comparison at each centre (`fig_sym_shape_skill_vs_diameter_c<lat>.png`), and the
+  `sym_layouts.png` geometry diagram (from `run_shape_demo.py`).
+- **Vertical heat transport** — `run_heat_flux.py` (sym-only SCOPE) forms the plane-fit
+  advective-heating estimate and hull truth into `data_heat/<config>__cell_<center>.nc`
+  (+ `heat_flux_metrics.csv`); `run_glider_heat_flux.py` adds the per-glider companion
+  `__glider.nc`. `heat_flux_summary.ipynb` then writes `heat_flux_figs/sym_sweep/`: per
+  family `error_scaling_<fam>.png` (area-average heating error vs diameter, total =
+  estimate + sub-array), `area_components_<fam>{,_flux}.png`, `area_reducible_<fam>{,_d0.5}.png`,
+  `point_flux_<fam>.png`, and the shape comparison `shape_compare_error_scaling_c<lat>.png`.
+  These are the experiment_2 heat-flux builders with exp1's w method; see
+  `experiment_2/README.md` for the `[·]`=footprint / `⟨·⟩`=time notation and full
+  decomposition. (experiment_1 replicates ONLY the sym_sweep set, not the exp2
+  equator/shift heat-flux scope.)
+
+The exp1-vs-exp2 overlay of all of the above lives in `experiments/compare_exp_1_2`
+(`sym_sweep/`), encoding experiment by line style + marker fill (exp1 solid/filled,
+exp2 dashed/open) and never by marker shape.

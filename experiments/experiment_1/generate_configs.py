@@ -26,9 +26,10 @@ Families written:
                   - single square/box, 2deg & 1deg (4 corner gliders)
                   - symmetric 3-cell array centred at -1/0/+1
   C  density    fixed centre (0.5N), gliders-per-cell swept 2/4/6 at each width
-  D  symhex     symmetric REGULAR hexagons (isotropic, least plane-fit bias on a
-                curved field): diameters 0.3/0.5/0.75/1.0deg (E-W width = 2*lon offset,
-                half-height = diameter/sqrt(3)) centred at 0.0/0.5/-0.5N, no moorings
+  D  symhex/    symmetric REGULAR shapes (hexagon/diamond/square) with vertices on a
+     symdia/    common truth circle of radius R = diameter/2: diameters 0.3/0.5/0.75/
+     symsq      1.0deg centred at 0.0/0.5/-0.5N, no moorings. Truth = the disk of the
+                circle (same for all three shapes at a given diameter & centre).
 
 Note: `_equator_hex_cell` is regular only when off = sqrt(3)/2 * half_height, which no
 swept width hits — so every equator_hex* config is a stretched (2-fold) hexagon. A
@@ -44,23 +45,19 @@ LON = 220.0                                    # 140W mooring line
 MOORING_LATS = (-2.0, -1.0, 0.0, 1.0, 2.0)     # real TAO moorings on the LON line
 WIDTHS = [0.25, 0.5, 0.75, 1.0, 1.5, 2.0]      # glider longitude offset (deg)
 
-# Symmetric REGULAR-hexagon family (a deliberate exception to the "stretched" note
-# above): geometrically regular pointy-top hexagons (6 vertices equidistant from the
-# centre, so isotropic / least plane-fit bias on a curved field). 'diameter' = E-W
-# flat-to-flat width = 2*lon-offset; regular => half-height = diameter/sqrt(3). No
-# moorings are added (evaluated on the 6 hexagon gliders alone).
-SYMHEX_DIAMS   = [0.3, 0.5, 0.75, 1.0]         # E-W width (deg) == 2 * lon offset
+# Symmetric REGULAR-shape families (hexagon / diamond / square). All three place
+# their vertices ON a common "truth circle" of radius R = diameter/2 about the cell
+# centre — the stationary analogue of the circling-glider arrays (experiment_3),
+# whose gliders orbit ON the circle. Because the vertices all lie on the same circle,
+# the model-truth footprint is the DISK of that circle: identical for the three
+# shapes at a given diameter & centre, varying only with centre and radius (NOT with
+# shape). 'diameter' d = circle diameter = 2R. No moorings (evaluated on the shape
+# gliders alone). This replaces the earlier convex-hull-of-the-polygon truth.
+SYMHEX_DIAMS   = [0.3, 0.5, 0.75, 1.0]         # circle diameter (deg) == 2 * radius
 SYMHEX_CENTERS = [0.0, 0.5, -0.5]              # cell centre latitudes (deg N)
 
-# Symmetric REGULAR square / diamond families — the square-shape analogues of the
-# symhex hexagons, generated at the SAME diameters so the three shapes compare at
-# equal E-W width. 'diameter' d = E-W width = 2*lon offset (matching symhex). Both
-# are isotropic on the equator (1deg lat ~ 1deg lon): the diamond is a square rotated
-# 45deg (4 vertices N/S/E/W at distance d/2 from the centre); the square is axis
-# aligned (4 corners at +/-d/2 lat and +/-d/2 lon). No moorings (evaluated on the 4
-# shape gliders alone, like symhex).
 SYMSHAPE_DIAMS   = [0.3, 0.5, 0.75, 1.0]
-SYMSHAPE_CENTERS = [0.0]                        # 0N/140W shape comparison
+SYMSHAPE_CENTERS = [0.0, 0.5, -0.5]            # shape comparison at the symhex centres
 HERE = os.path.dirname(os.path.abspath(__file__))
 CFG_ROOT = os.path.join(HERE, 'configs')
 
@@ -186,38 +183,40 @@ def _equator_3cell(off):
 
 
 def _sym_hex_cell(center, diameter):
-    """Single REGULAR pointy-top hexagon centred at `center` lat on the LON line.
-    diameter = E-W width = 2*off; regular => half = diameter/sqrt(3), so all 6
-    vertices are equidistant from the centre. N/S vertices on the LON line, 4 side
-    gliders at +/-off lon and +/-half/2 lat. No moorings are added."""
-    off = diameter / 2.0
-    half = diameter / 3.0 ** 0.5                # regular: half = diameter / sqrt(3)
-    mid = half / 2.0
+    """Single REGULAR pointy-top hexagon whose 6 vertices lie on the truth circle of
+    radius R = diameter/2 centred at `center` lat on the LON line. N/S vertices at
+    +/-R (on the LON line), the 4 side gliders at +/-R/2 lat and +/-R*sqrt(3)/2 lon,
+    so every vertex is exactly R from the centre. No moorings are added."""
+    r = diameter / 2.0
+    mid = r / 2.0                               # lat offset of the 4 side vertices
+    side = r * 3.0 ** 0.5 / 2.0                 # lon offset of the 4 side vertices
     return [{'center_lat': center,
-             'positions': [[center + half, LON], [center - half, LON],
-                           [center + mid, LON - off], [center + mid, LON + off],
-                           [center - mid, LON - off], [center - mid, LON + off]]}]
+             'positions': [[center + r, LON], [center - r, LON],
+                           [center + mid, LON - side], [center + mid, LON + side],
+                           [center - mid, LON - side], [center - mid, LON + side]]}]
 
 
 def _sym_diamond_cell(center, diameter):
-    """Single REGULAR diamond (a square rotated 45deg) centred at `center` lat on the
-    LON line. diameter = E-W vertex-to-vertex width = 2*off; off = d/2 so all 4
-    vertices are equidistant (d/2) from the centre. N/S vertices on the LON line,
-    E/W vertices at +/-off longitude on the centre latitude. No moorings are added."""
-    off = diameter / 2.0
+    """Single REGULAR diamond (a square rotated 45deg) whose 4 vertices lie on the
+    truth circle of radius R = diameter/2 centred at `center` lat on the LON line.
+    N/S vertices at +/-R on the LON line, E/W vertices at +/-R longitude on the
+    centre latitude, so every vertex is exactly R from the centre. No moorings."""
+    r = diameter / 2.0
     return [{'center_lat': center,
-             'positions': [[center + off, LON], [center - off, LON],
-                           [center, LON - off], [center, LON + off]]}]
+             'positions': [[center + r, LON], [center - r, LON],
+                           [center, LON - r], [center, LON + r]]}]
 
 
 def _sym_square_cell(center, diameter):
-    """Single REGULAR axis-aligned square centred at `center` lat on the LON line.
-    diameter = E-W (and N-S) side width = 2*off; off = d/2 so the 4 corners sit at
-    +/-off latitude and +/-off longitude. No moorings are added."""
-    off = diameter / 2.0
+    """Single REGULAR axis-aligned square whose 4 corners lie on the truth circle of
+    radius R = diameter/2 centred at `center` lat on the LON line. Corners sit at
+    +/-R/sqrt(2) latitude and +/-R/sqrt(2) longitude, so each corner is exactly R
+    from the centre (the circle is circumscribed). No moorings are added."""
+    r = diameter / 2.0
+    s = r / 2.0 ** 0.5                          # lat/lon offset of the 4 corners
     return [{'center_lat': center,
-             'positions': [[center + off, LON - off], [center + off, LON + off],
-                           [center - off, LON - off], [center - off, LON + off]]}]
+             'positions': [[center + s, LON - s], [center + s, LON + s],
+                           [center - s, LON - s], [center - s, LON + s]]}]
 
 
 def _density_cell(off, rows):
@@ -310,38 +309,39 @@ def build():
                 positions=_union_positions(cells), cells=cells)))
 
     # D. symmetric REGULAR-hexagon sweep (diameter x centre, no moorings) --
+    #    Vertices lie on the truth circle of radius R = diameter/2; the model-truth
+    #    footprint is that disk (identical across shapes at a given diameter/centre).
     for d in SYMHEX_DIAMS:
-        off = d / 2.0
+        r = d / 2.0
         for c in SYMHEX_CENTERS:
             cells = _sym_hex_cell(c, d)            # no _with_interior_moorings: no moorings
-            half = d / 3.0 ** 0.5
             written.append(_write('symhex', dict(
                 name=f'symhex_d{d}_c{c:+.1f}', family='symhex', pattern=f'symhex_d{d}',
-                width=off, diameter=d, center_lat=c,
+                width=r, diameter=d, radius=r, center_lat=c, center_lon=LON,
                 n_gliders_per_cell=6, n_gliders_total=6,
-                cell_height_deg=2 * half,
-                description=(f'Symmetric REGULAR hexagon, {d:g}deg E-W diameter '
-                             f'(lon offset {off:g}, half-height {half:.3f}), centred at '
-                             f'{c:+g}N, 6 gliders, no moorings.'),
+                cell_height_deg=2 * r,             # N-S vertex-to-vertex extent = 2R = d
+                description=(f'Symmetric REGULAR hexagon, 6 vertices on the truth circle '
+                             f'of radius {r:g}deg (diameter {d:g}deg), centred at '
+                             f'{c:+g}N/{LON:g}E, no moorings.'),
                 positions=_union_positions(cells), cells=cells)))
 
     # D2. symmetric REGULAR square / diamond sweeps (the shape analogues of symhex,
-    #     same diameters, 0N/140W, no moorings) -----------------------------
+    #     same circle diameters, 140W, no moorings) --------------------------
     for d in SYMSHAPE_DIAMS:
-        off = d / 2.0
+        r = d / 2.0
         for c in SYMSHAPE_CENTERS:
-            for subdir, fam, builder, shp in (
-                    ('symdia', 'symdia', _sym_diamond_cell, 'diamond'),
-                    ('symsq',  'symsq',  _sym_square_cell,  'square')):
+            for subdir, fam, builder, shp, height in (
+                    ('symdia', 'symdia', _sym_diamond_cell, 'diamond', 2 * r),
+                    ('symsq',  'symsq',  _sym_square_cell,  'square', 2 * r / 2.0 ** 0.5)):
                 cells = builder(c, d)              # no moorings, like symhex
                 written.append(_write(subdir, dict(
                     name=f'{fam}_d{d}_c{c:+.1f}', family=fam, pattern=f'{fam}_d{d}',
-                    width=off, diameter=d, center_lat=c,
+                    width=r, diameter=d, radius=r, center_lat=c, center_lon=LON,
                     n_gliders_per_cell=4, n_gliders_total=4,
-                    cell_height_deg=2 * off,
-                    description=(f'Symmetric REGULAR {shp}, {d:g}deg E-W diameter '
-                                 f'(lon offset {off:g}), centred at {c:+g}N, '
-                                 f'4 gliders, no moorings.'),
+                    cell_height_deg=height,
+                    description=(f'Symmetric REGULAR {shp}, 4 vertices on the truth circle '
+                                 f'of radius {r:g}deg (diameter {d:g}deg), centred at '
+                                 f'{c:+g}N/{LON:g}E, no moorings.'),
                     positions=_union_positions(cells), cells=cells)))
     return written
 

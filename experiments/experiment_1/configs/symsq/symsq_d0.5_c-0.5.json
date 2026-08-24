@@ -4,27 +4,29 @@
   "pattern": "symsq_d0.5",
   "width": 0.25,
   "diameter": 0.5,
+  "radius": 0.25,
   "center_lat": -0.5,
+  "center_lon": 220.0,
   "n_gliders_per_cell": 4,
   "n_gliders_total": 4,
-  "cell_height_deg": 0.5,
-  "description": "Symmetric REGULAR square, 0.5deg E-W diameter (lon offset 0.25), centred at -0.5N, 4 gliders, no moorings.",
+  "cell_height_deg": 0.35355339059327373,
+  "description": "Symmetric REGULAR square, 4 vertices on the truth circle of radius 0.25deg (diameter 0.5deg), centred at -0.5N/220E, no moorings.",
   "positions": [
     [
-      -0.25,
-      219.75
+      -0.32322330470336313,
+      219.82322330470336
     ],
     [
-      -0.25,
-      220.25
+      -0.32322330470336313,
+      220.17677669529664
     ],
     [
-      -0.75,
-      219.75
+      -0.6767766952966369,
+      219.82322330470336
     ],
     [
-      -0.75,
-      220.25
+      -0.6767766952966369,
+      220.17677669529664
     ]
   ],
   "cells": [
@@ -32,20 +34,20 @@
       "center_lat": -0.5,
       "positions": [
         [
-          -0.25,
-          219.75
+          -0.32322330470336313,
+          219.82322330470336
         ],
         [
-          -0.25,
-          220.25
+          -0.32322330470336313,
+          220.17677669529664
         ],
         [
-          -0.75,
-          219.75
+          -0.6767766952966369,
+          219.82322330470336
         ],
         [
-          -0.75,
-          220.25
+          -0.6767766952966369,
+          220.17677669529664
         ]
       ]
     }

@@ -32,7 +32,8 @@ from matplotlib.colors import LogNorm, TwoSlopeNorm
 import cmocean.cm as cmo
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DATA = os.path.join(HERE, "data_heat")
+# heavy .nc caches live on /data (not /home); see project_sym_disk_truth memory
+DATA = os.path.join('/data/SO3/edavenport/tpose24-osse/cache', 'experiment_2', 'data_heat')
 OUT = os.path.join(HERE, "spectra_figs")
 CONFIG = "equator_1deg_w0.5"
 CELL = "+0.00"
