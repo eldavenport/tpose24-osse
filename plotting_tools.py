@@ -787,7 +787,8 @@ def plot_transect(panels, cbar_label, cmap, suptitle, fname,
 
 
 def plot_footprint_profiles(profiles, coord, rows, widths, shapes, colors,
-                            xlabel, legend_title, fname, ref_x=None):
+                            xlabel, legend_title, fname, ref_x=None,
+                            metric_label='|w error| (m day$^{-1}$)'):
     """
     Line-profile summary of footprint w-error, faceted by (statistic, height) rows ×
     width cols, one colored line per shape -- so the lowest line at any point on the
@@ -825,7 +826,7 @@ def plot_footprint_profiles(profiles, coord, rows, widths, shapes, colors,
                 if r == nrows - 1:
                     ax.set_xlabel(xlabel)
                 if c == 0:
-                    ax.set_ylabel(f'{stat} |w error| (m day$^{{-1}}$)')
+                    ax.set_ylabel(f'{stat} {metric_label}')
         handles = [plt.Line2D([], [], color=colors[s], lw=2.4) for s in shapes]
         fig.legend(handles, list(shapes), title=legend_title, ncol=len(shapes),
                    loc='upper center', bbox_to_anchor=(0.5, 1.0), frameon=False)

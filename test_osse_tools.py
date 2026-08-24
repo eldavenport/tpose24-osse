@@ -7,6 +7,10 @@ Run with: conda run -n tpose python test_osse_tools.py
 import numpy as np
 import xarray as xr
 import sys
+import os
+import json
+
+HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 def _hexagon_positions(lat_c, lon_c, radius_deg):
@@ -246,6 +250,33 @@ def test_model_region_density_anomalies():
           f"[{np.nanmin(sig):.1f}, {np.nanmax(sig):.1f}]  OK")
 
 
+def test_sym_disk_truth_shape_independent():
+    """The circular-disk truth (sym_disk) must be identical for the three symmetric
+    shapes at a given diameter & centre, and differ from the old convex-hull truth."""
+    from osse_tools import load_model, sample_model_w, sym_disk
+
+    run_dir = '/data/SO3/edavenport/tpose24/oct2012_3month_transp_cons'
+    ds = load_model(run_dir, iters=[36])
+
+    def truth(fam):
+        cfg = json.load(open(os.path.join(
+            HERE, 'experiments', 'experiment_1', 'configs', fam, f'{fam}_d1.0_c+0.0.json')))
+        pos = [tuple(p) for p in cfg['positions']]
+        disk = sym_disk(cfg)
+        w_disk = sample_model_w(ds, pos, max_depth=20, dz_obs=2, disk=disk)
+        w_hull = sample_model_w(ds, pos, max_depth=20, dz_obs=2)   # old polygon truth
+        return disk, w_disk.values.ravel(), w_hull.values.ravel()
+
+    hexd, hexw, hexh = truth('symhex')
+    diad, diaw, _ = truth('symdia')
+    sqd, sqw, _ = truth('symsq')
+    assert hexd == diad == sqd == (0.0, 220.0, 0.5), f"disk spec differs: {hexd},{diad},{sqd}"
+    assert np.allclose(hexw, diaw, equal_nan=True), "hex vs diamond disk-truth differ"
+    assert np.allclose(hexw, sqw, equal_nan=True), "hex vs square disk-truth differ"
+    assert not np.allclose(hexw, hexh, equal_nan=True), "disk-truth unexpectedly equals hull-truth"
+    print(f"  sym_disk truth identical across shapes {hexd}; differs from hull  OK")
+
+
 if __name__ == '__main__':
     tests = [
         test_planefit_div_recovery,
@@ -257,6 +288,7 @@ if __name__ == '__main__':
         test_sample_fields_shape,
         test_sample_model_w_shape,
         test_model_region_density_anomalies,
+        test_sym_disk_truth_shape_independent,
     ]
     failed = 0
     for t in tests:

@@ -171,15 +171,19 @@ def sample_fields(ds, positions, vars=('UVEL', 'VVEL', 'THETA', 'SALT'),
 
 
 def model_region(ds, positions, vars=('UVEL', 'VVEL', 'THETA', 'SALT'),
-                 max_depth=70, dz_obs=2, min_depth=0):
+                 max_depth=70, dz_obs=2, min_depth=0, disk=None):
     """
-    The 'true' estimate: model fields at every grid point inside the array hull.
+    The 'true' estimate: model fields at every grid point inside the array footprint.
 
     Each field is interpolated to the tracer cell centers (co-locating U, V, T, S)
-    and to the obs depths, then masked to the convex hull of positions and stacked
+    and to the obs depths, then masked to the footprint of positions and stacked
     over the horizontal points. Compare its distribution against sample_fields output.
 
-    For a large hull or long record, subsample time before calling for memory usage purposes.
+    The footprint is the convex hull of `positions`, unless `disk`=(center_lat,
+    center_lon, radius_deg) is given (symmetric-shape arrays), in which case it is that
+    circular disk.
+
+    For a large footprint or long record, subsample time before calling for memory usage.
 
     Returns
     -------
@@ -187,13 +191,17 @@ def model_region(ds, positions, vars=('UVEL', 'VVEL', 'THETA', 'SALT'),
         Variables renamed U, V, T, S; lat/lon stored as coordinates on point.
     """
     obs_z_da = _obs_z(max_depth, dz_obs, min_depth)
-    lon0, lon1, lat0, lat1 = _hull_bbox(positions)
+    if disk is not None:
+        lon0, lon1, lat0, lat1 = _disk_bbox(*disk)
+    else:
+        lon0, lon1, lat0, lat1 = _hull_bbox(positions)
     xc = ds.XC.sel(XC=slice(lon0, lon1)).values
     yc = ds.YC.sel(YC=slice(lat0, lat1)).values
     xt = xr.DataArray(xc, dims='XC', coords={'XC': xc})
     yt = xr.DataArray(yc, dims='YC', coords={'YC': yc})
-    mask = xr.DataArray(_convex_hull_mask(xc, yc, positions),
-                        dims=('YC', 'XC'), coords={'YC': yc, 'XC': xc})
+    mask_arr = (_disk_mask(xc, yc, *disk) if disk is not None
+                else _convex_hull_mask(xc, yc, positions))
+    mask = xr.DataArray(mask_arr, dims=('YC', 'XC'), coords={'YC': yc, 'XC': xc})
 
     keep = {'time', 'YC', 'XC', 'obs_depth'}
     out = {}
@@ -414,8 +422,71 @@ def _hull_mean(field, positions):
     return sub.where(mask).mean(['XC', 'YC'])
 
 
+# ---------------------------------------------------------------------------
+# Circular-disk truth footprint (symmetric-shape arrays)
+# ---------------------------------------------------------------------------
+# The symmetric REGULAR shapes (symhex/symdia/symsq) place their vertices ON a common
+# circle of radius R = diameter/2 (see experiment_1/generate_configs.py). Their model
+# "truth" footprint is the DISK of that circle — identical for the three shapes at a
+# given centre & radius — rather than the convex hull of the polygon. This makes the
+# stationary shapes consistent with the circling-glider arrays (experiment_3), whose
+# gliders orbit ON the circle and whose truth is already this disk.
+
+def _disk_bbox(center_lat, center_lon, radius_deg, buf=3 / 24):
+    """(lon0, lon1, lat0, lat1) bounding box enclosing the truth disk plus a buffer."""
+    return (center_lon - radius_deg - buf, center_lon + radius_deg + buf,
+            center_lat - radius_deg - buf, center_lat + radius_deg + buf)
+
+
+def _disk_mask(xc_vals, yc_vals, center_lat, center_lon, radius_deg):
+    """Boolean mask (nYC, nXC) — True for grid points within radius_deg of the centre.
+
+    Distance is measured in degrees (lat == lon), the same metric the symmetric-shape
+    vertices are placed on, so the vertices sit exactly on the disk boundary at every
+    centre. At the equator this equals a metre circle (matching experiment_3); off the
+    equator the deg-vs-metre difference is < 1e-4 deg, far below the grid spacing.
+    """
+    XC, YC = np.meshgrid(xc_vals, yc_vals)
+    return ((XC - center_lon) ** 2 + (YC - center_lat) ** 2) <= radius_deg ** 2
+
+
+def _disk_mean(field, center_lat, center_lon, radius_deg):
+    """Average a (..., YC, XC) field over model grid points inside the truth disk."""
+    lon0, lon1, lat0, lat1 = _disk_bbox(center_lat, center_lon, radius_deg)
+    sub = field.sel(XC=slice(lon0, lon1), YC=slice(lat0, lat1))
+    mask = xr.DataArray(
+        _disk_mask(sub.XC.values, sub.YC.values, center_lat, center_lon, radius_deg),
+        dims=('YC', 'XC'), coords={'YC': sub.YC.values, 'XC': sub.XC.values})
+    return sub.where(mask).mean(['XC', 'YC'])
+
+
+def _footprint_mean(field, positions=None, disk=None):
+    """Area-mean over the truth footprint: the disk (center_lat, center_lon, radius_deg)
+    when `disk` is given, else the convex hull of `positions`."""
+    if disk is not None:
+        return _disk_mean(field, *disk)
+    return _hull_mean(field, positions)
+
+
+def sym_disk(cfg):
+    """Truth disk (center_lat, center_lon, radius_deg) for a symmetric-shape config, or
+    None for any other config (callers then fall back to the convex-hull truth).
+
+    `cfg` is a loaded config dict (family symhex/symdia/symsq). The disk is the circle
+    the shape's vertices lie on: radius = diameter/2, centred at the config centre.
+    """
+    if not isinstance(cfg, dict) or cfg.get('family') not in ('symhex', 'symdia', 'symsq'):
+        return None
+    clat = cfg['center_lat']
+    clon = cfg.get('center_lon')
+    if clon is None:
+        clon = float(np.mean([p[1] for p in cfg['positions']]))
+    radius = cfg.get('radius', cfg['diameter'] / 2.0)
+    return (clat, clon, radius)
+
+
 def sample_model_w(ds, positions, max_depth=70, dz_obs=2,
-                   remove_barotropic=False, spatial_mean=True, min_depth=0):
+                   remove_barotropic=False, spatial_mean=True, min_depth=0, disk=None):
     """
     Sample WVEL interpolated to the interface depths of compute_w_planefit.
 
@@ -429,8 +500,11 @@ def sample_model_w(ds, positions, max_depth=70, dz_obs=2,
         If True, subtract the linear barotropic trend from the returned w.
     spatial_mean : bool
         If True (default), return WVEL averaged over all model grid points inside
-        the convex hull — the area-mean w that the plane fit estimates. If False,
-        return WVEL at the array centroid.
+        the footprint (hull, or the disk when `disk` is given) — the area-mean w that
+        the plane fit estimates. If False, return WVEL at the array centroid.
+    disk : (center_lat, center_lon, radius_deg) or None
+        If given, average over the circular disk of that radius/centre instead of the
+        convex hull of `positions` (used for the symmetric-shape arrays; see sym_disk).
 
     Returns
     -------
@@ -445,7 +519,7 @@ def sample_model_w(ds, positions, max_depth=70, dz_obs=2,
     w_z_da = xr.DataArray(w_z, dims='depth', coords={'depth': w_z})
 
     if spatial_mean:
-        w = _hull_mean(ds.WVEL.interp(Zl=w_z_da), positions).compute()
+        w = _footprint_mean(ds.WVEL.interp(Zl=w_z_da), positions, disk).compute()
     else:
         lat_c = np.mean([p[0] for p in positions])
         lon_c = np.mean([p[1] for p in positions])
@@ -462,9 +536,11 @@ def sample_model_w(ds, positions, max_depth=70, dz_obs=2,
     return w
 
 
-def model_divergence(ds, positions, max_depth=70, dz_obs=2, min_depth=0):
+def model_divergence(ds, positions, max_depth=70, dz_obs=2, min_depth=0, disk=None):
     """
-    True horizontal divergence, area-averaged over the array hull.
+    True horizontal divergence, area-averaged over the array footprint (hull, or the
+    disk when `disk`=(center_lat, center_lon, radius_deg) is given for a symmetric
+    shape).
 
     Computed on the native C-grid from the flux form du/dx + dv/dy using the
     cell-edge lengths and areas, so it is the truth that compute_w_planefit's
@@ -479,7 +555,7 @@ def model_divergence(ds, positions, max_depth=70, dz_obs=2, min_depth=0):
     div = (grid.diff(ds.UVEL * ds.dyG, 'X', boundary='fill') +
            grid.diff(ds.VVEL * ds.dxG, 'Y', boundary='fill')) / ds.rA
     div = div.interp(Z=_obs_z(max_depth, dz_obs, min_depth))
-    return _hull_mean(div, positions).compute()
+    return _footprint_mean(div, positions, disk).compute()
 
 
 # ---------------------------------------------------------------------------
@@ -699,7 +775,9 @@ def w_skill_by_depth(w_est, w_model):
 
 # Reference seawater density and heat capacity for converting a temperature flux
 # w'T' (deg C m/s) into a heat flux rho0*cp*w'T' (W/m^2). HFLUX = W/m^2 per deg C m/s.
-RHO0 = 1025.0                                    # kg/m^3
+# Values match the TPOSE24 MITgcm run: rhonil=1027 (the model's reference density;
+# rhoConst defaults to rhonil) and MITgcm's default HeatCapacity_Cp = 3994 J/(kg K).
+RHO0 = 1027.0                                    # kg/m^3
 CP   = 3994.0                                    # J/(kg deg C)
 HFLUX = RHO0 * CP                                # ~4.09e6 J/(m^3 deg C)
 
@@ -750,9 +828,14 @@ def model_vertical_flux(region, mean_dim='time', reduce=True):
     return vertical_eddy_flux(region.W, region, mean_dim, reduce=reduce).mean('point')
 
 
-def sample_model_heat_flux(ds, positions, max_depth=70, dz_obs=2, min_depth=0):
+def sample_model_heat_flux(ds, positions, max_depth=70, dz_obs=2, min_depth=0, disk=None):
     """
-    True hull-area vertical temperature flux and its components, at obs midpoints.
+    True footprint-area vertical temperature flux and its components, at obs midpoints.
+
+    The footprint is the convex hull of `positions`, unless `disk`=(center_lat,
+    center_lon, radius_deg) is given (symmetric-shape arrays), in which case it is that
+    circular disk. The returned `*_hull` names are kept for backward compatibility and
+    denote the footprint average either way.
 
     Unlike model_region (which horizontally interpolates every field to the tracer
     grid — expensive over a long record), this selects the NATIVE model grid points
@@ -779,14 +862,20 @@ def sample_model_heat_flux(ds, positions, max_depth=70, dz_obs=2, min_depth=0):
     Primes = deviations from the time mean.
     """
     obs_z = _obs_z(max_depth, dz_obs, min_depth)
-    # Restrict to the hull bounding box FIRST, then interpolate in depth: interpolating
+    # Restrict to the footprint bounding box FIRST, then interpolate in depth: interpolating
     # the global field before selecting would process the whole domain (slow, huge RAM).
-    lon0, lon1, lat0, lat1 = _hull_bbox(positions)
+    if disk is not None:
+        lon0, lon1, lat0, lat1 = _disk_bbox(*disk)
+    else:
+        lon0, lon1, lat0, lat1 = _hull_bbox(positions)
     W = ds.WVEL.sel(XC=slice(lon0, lon1), YC=slice(lat0, lat1)).interp(Zl=obs_z)
     T = ds.THETA.sel(XC=slice(lon0, lon1), YC=slice(lat0, lat1)).interp(Z=obs_z)
+    if disk is not None:
+        mask_arr = _disk_mask(W.XC.values, W.YC.values, *disk)
+    else:
+        mask_arr = _convex_hull_mask(W.XC.values, W.YC.values, positions)
     mask = xr.DataArray(
-        _convex_hull_mask(W.XC.values, W.YC.values, positions),
-        dims=('YC', 'XC'), coords={'YC': W.YC.values, 'XC': W.XC.values})
+        mask_arr, dims=('YC', 'XC'), coords={'YC': W.YC.values, 'XC': W.XC.values})
     W = W.where(mask); T = T.where(mask)
 
     # vertical temperature gradient dT/dz on the obs axis (obs_depth is metres,
@@ -1239,51 +1328,41 @@ def first_efold(coord, r, center):
 # w at the base of the sampled layer = H * depth-mean divergence (depth-averaging
 # commutes with the horizontal divergence), so we map
 #     w_err = H * (planefit_divergence - true_area_mean_divergence)
-# Tier 2 uses the discrete glider stencil; Tier 1 fills the footprint (best case,
-# dense sampling -> the intrinsic aliasing floor of a footprint of that size).
+# using the discrete glider stencil (what the array actually samples).
 
-FOOTPRINT_SHAPES = ('hexagon', 'square', 'square4', 'diamond')
+FOOTPRINT_SHAPES = ('hexagon', 'square4', 'diamond')
 
 
 def footprint_offsets(shape, width_deg, height_deg):
     """
-    Glider (lat, lon) offsets (deg, relative to the array centre) for a footprint
-    inscribed in a width_deg (zonal) x height_deg (meridional) box.
+    Glider (lat, lon) offsets (deg, relative to the array centre), with the vertices
+    placed ON the footprint ELLIPSE of semi-axes width/2 (zonal) x height/2 (meridional)
+    -- a circle when width == height. This matches the repo's regular-shape convention
+    (experiment_1/generate_configs.py:_sym_*_cell): the isotropic case reproduces the
+    symhex/symsq/symdia arrays of circle diameter d = width = height exactly.
 
-    hexagon : 6 gliders -- N/S vertices on the centre meridian, 4 side gliders at
-              +/-width/2 lon and +/-height/4 lat (pointy N-S). Matches
-              experiment_1/generate_configs.py:_equator_hex_cell, where the N/S
-              vertices land on the mooring line. Regular iff width = 0.866*height.
-    square  : 6 gliders -- 4 box corners + the 2 E/W edge midpoints (matches the
-              existing rectangle configs).
-    square4 : 4 gliders -- the 4 box corners only (fair 4-glider peer of diamond).
-    diamond : 4 gliders -- the N/S/E/W tips (edge midpoints of the box).
+    hexagon : 6 gliders -- N/S vertices at (+/-h, 0) and 4 side vertices at
+              (+/-h/2, +/-w*sqrt3/2), i.e. ellipse angles 30/90/150/... deg (pointy N-S).
+    square4 : 4 gliders -- the 4 corners at ellipse +/-45 deg, (+/-h/sqrt2, +/-w/sqrt2).
+    diamond : 4 gliders -- the N/S/E/W tips (+/-h, 0), (0, +/-w).
     """
-    w, h = width_deg / 2.0, height_deg / 2.0
+    w, h = width_deg / 2.0, height_deg / 2.0        # ellipse semi-axes (lon, lat)
+    s = 3.0 ** 0.5 / 2.0                             # hexagon side-vertex on the ellipse
+    c = 2.0 ** -0.5                                  # square corner on the ellipse (45 deg)
     if shape == 'hexagon':
-        return [(h, 0.0), (h / 2, w), (-h / 2, w),
-                (-h, 0.0), (-h / 2, -w), (h / 2, -w)]
-    if shape == 'square':
-        return [(h, w), (h, -w), (-h, -w), (-h, w), (0.0, w), (0.0, -w)]
+        return [(h, 0.0), (h / 2, w * s), (-h / 2, w * s),
+                (-h, 0.0), (-h / 2, -w * s), (h / 2, -w * s)]
     if shape == 'square4':
-        return [(h, w), (h, -w), (-h, -w), (-h, w)]
+        return [(h * c, w * c), (h * c, -w * c), (-h * c, -w * c), (-h * c, w * c)]
     if shape == 'diamond':
         return [(h, 0.0), (0.0, w), (-h, 0.0), (0.0, -w)]
     raise ValueError(f'unknown shape {shape!r}; choose from {FOOTPRINT_SHAPES}')
 
 
 def footprint_outline(shape, width_deg, height_deg):
-    """Closed polygon vertices (lat, lon) tracing a footprint's boundary, for the
-    convex-hull area (truth averaging) and the filled-fit region (Tier 1)."""
-    w, h = width_deg / 2.0, height_deg / 2.0
-    if shape == 'hexagon':
-        return [(h, 0.0), (h / 2, w), (-h / 2, w),
-                (-h, 0.0), (-h / 2, -w), (h / 2, -w)]
-    if shape in ('square', 'square4'):
-        return [(h, w), (h, -w), (-h, -w), (-h, w)]
-    if shape == 'diamond':
-        return [(h, 0.0), (0.0, w), (-h, 0.0), (0.0, -w)]
-    raise ValueError(f'unknown shape {shape!r}; choose from {FOOTPRINT_SHAPES}')
+    """Closed polygon vertices (lat, lon) tracing a footprint's boundary (its vertices
+    on the ellipse) -- used to draw the shape and for the tier-1 dense-fit hull."""
+    return footprint_offsets(shape, width_deg, height_deg)
 
 
 def colocate_uv(meanU, meanV):
@@ -1353,40 +1432,31 @@ def _shape_cell_mask(shape, width_deg, height_deg, dlon, dlat):
     return mask, IX, IY
 
 
-def true_areamean_divergence(U, V, lon, lat, shape, width_deg, height_deg):
-    """True horizontal divergence of the mean field, area-averaged over the
-    footprint hull centred at every grid point (the like-for-like truth)."""
+def _ellipse_cell_mask(width_deg, height_deg, dlon, dlat):
+    """Boolean mask of grid cells inside the footprint ELLIPSE (semi-axes width/2 x
+    height/2) on a local window -- a circle when width == height. This is the
+    shape-INDEPENDENT truth region every footprint at this size is scored against."""
+    a, b = width_deg / 2.0, height_deg / 2.0
+    rx = max(int(round(a / dlon)), 1)
+    ry = max(int(round(b / dlat)), 1)
+    jx = np.arange(-rx, rx + 1)
+    iy = np.arange(-ry, ry + 1)
+    CX, CY = np.meshgrid(jx * dlon, iy * dlat)        # local degrees
+    return (CX / a) ** 2 + (CY / b) ** 2 <= 1.0
+
+
+def true_areamean_divergence(U, V, lon, lat, width_deg, height_deg):
+    """True horizontal divergence of the mean field, area-averaged over the footprint
+    ELLIPSE (semi-axes width/2 x height/2) centred at every grid point -- the
+    like-for-like truth, shape-independent (a disk when width == height)."""
     from scipy.ndimage import correlate
     fx, _ = gradient_components(U, lon, lat)
     _, fy = gradient_components(V, lon, lat)
     div_true = fx + fy
     dlon = _grid_spacing_deg(lon); dlat = _grid_spacing_deg(lat)
-    mask, _, _ = _shape_cell_mask(shape, width_deg, height_deg, dlon, dlat)
+    mask = _ellipse_cell_mask(width_deg, height_deg, dlon, dlat)
     kern = mask.astype(float) / mask.sum()
     return correlate(div_true, kern, mode='nearest')
-
-
-def filled_planefit_divergence(U, V, lon, lat, shape, width_deg, height_deg):
-    """
-    Plane-fit divergence using EVERY grid point inside the footprint (Tier 1) at
-    every centre -- the best-case, dense-sampling fit. For a footprint symmetric in
-    x and y the least-squares slopes decouple, so du/dx = <x*u>/<x^2> etc., which is
-    a correlation of the field with the (x*mask) / (y*mask) kernels.
-    """
-    from scipy.ndimage import correlate
-    dlon = _grid_spacing_deg(lon); dlat = _grid_spacing_deg(lat)
-    deg_to_m = _KM_PER_DEG * 1000.0
-    mask, IX, IY = _shape_cell_mask(shape, width_deg, height_deg, dlon, dlat)
-    m = mask.astype(float)
-    Kx = IX * m; Ky = IY * m
-    Sxx = float((IX ** 2 * m).sum()); Syy = float((IY ** 2 * m).sum())
-    # du/d(col index) and dv/d(row index); convert index -> metres (cos(lat) per row)
-    du_di = correlate(U, Kx, mode='nearest') / Sxx
-    dv_dj = correlate(V, Ky, mode='nearest') / Syy
-    cos = np.cos(np.radians(lat))[:, None]
-    du_dx = du_di / (dlon * cos * deg_to_m)
-    dv_dy = dv_dj / (dlat * deg_to_m)
-    return du_dx + dv_dy
 
 
 def planefit_gradient_scalars(U, V, lon, lat, positions):
@@ -1437,23 +1507,122 @@ def gradient_map_fields(meanU, meanV):
                 lon=lon, lat=lat, U=U, V=V)
 
 
-def footprint_w_error(means, shape, width_deg, height_deg, depth_m, tier=2):
+def footprint_sample_offsets(shape, width_deg, height_deg, lon, lat, tier):
+    """(dlat, dlon) offsets the plane fit samples for a footprint, by tier.
+
+    tier 2 -- the discrete glider positions (footprint_offsets): sparse and realistic,
+              so its error bundles the field's nonlinearity with the penalty of few,
+              specifically-placed samples (geometry, conditioning). What a real array does.
+    tier 1 -- EVERY grid cell inside the footprint hull (dense): the best a plane fit to
+              this shape could do given the full field under it, so its error isolates
+              the plane-fit-to-shape (nonlinearity) part alone, without the sparse-
+              sampling penalty. Tier2 - Tier1 is the cost of sparse sampling that shape.
+    lon, lat set the grid spacing for the tier-1 cell enumeration.
+    """
+    if tier == 'tier2':
+        return footprint_offsets(shape, width_deg, height_deg)
+    if tier == 'tier1':
+        dlon = _grid_spacing_deg(lon); dlat = _grid_spacing_deg(lat)
+        mask, IX, IY = _shape_cell_mask(shape, width_deg, height_deg, dlon, dlat)
+        return list(zip(IY[mask] * dlat, IX[mask] * dlon))
+    raise ValueError(f'unknown tier {tier!r}; choose "tier1" or "tier2"')
+
+
+def footprint_w_error(means, shape, width_deg, height_deg, depth_m, tier='tier2'):
     """
     Map the error (m/day) a footprint's plane fit makes in the depth-/time-mean w at
     the base of the 0..depth_m layer: w_err = depth_m * (div_est - div_true) * 86400.
+    div_est is the plane-fit divergence of the footprint's sample points; `tier`
+    (see footprint_sample_offsets) selects the discrete glider stencil (tier 2, what the
+    array actually samples) or the dense every-cell-in-the-hull fit (tier 1).
 
     means : dict with 'U' (YC,XG) and 'V' (YG,XC) time-and-depth-mean DataArrays.
-    tier  : 2 = discrete glider stencil; 1 = filled footprint (dense-sampling floor).
     Returns an (nlat, nlon) DataArray on the tracer grid (coords lon=XC, lat=YC).
     """
     U, V, lon, lat = colocate_uv(means['U'], means['V'])
-    div_true = true_areamean_divergence(U, V, lon, lat, shape, width_deg, height_deg)
-    if tier == 2:
-        div_est = planefit_divergence_stencil(U, V, lon, lat,
-                                              footprint_offsets(shape, width_deg, height_deg))
-    elif tier == 1:
-        div_est = filled_planefit_divergence(U, V, lon, lat, shape, width_deg, height_deg)
-    else:
-        raise ValueError('tier must be 1 or 2')
+    div_true = true_areamean_divergence(U, V, lon, lat, width_deg, height_deg)
+    offsets = footprint_sample_offsets(shape, width_deg, height_deg, lon, lat, tier)
+    div_est = planefit_divergence_stencil(U, V, lon, lat, offsets)
     w_err = depth_m * (div_est - div_true) * 86400.0
     return xr.DataArray(w_err, dims=('YC', 'XC'), coords={'YC': lat, 'XC': lon})
+
+
+def _stencil_field_mean(F, lon, lat, offsets):
+    """Array-mean a stacked field F (nz, ny, nx) over a fixed glider `offsets` stencil
+    placed at every grid point: mean over gliders of F interpolated onto the grid
+    shifted by each offset. This is what a discrete array (Tier 2) sees as its
+    footprint-mean of F. Because it is linear, the array-mean of dT/dz equals d/dz of
+    the array-mean T, so passing dT/dz here gives the stencil's estimated ∂zT."""
+    from scipy.interpolate import RegularGridInterpolator
+    F = np.asarray(F, float)
+    nz, ny, nx = F.shape
+    LON, LAT = np.meshgrid(lon, lat)
+    pts = [np.stack([(LAT + dlat).ravel(), (LON + dlon).ravel()], axis=-1)
+           for dlat, dlon in offsets]
+    acc = np.zeros((nz, ny, nx))
+    for k in range(nz):
+        rgi = RegularGridInterpolator((lat, lon), F[k], bounds_error=False,
+                                      fill_value=np.nan)
+        for p in pts:
+            acc[k] += rgi(p).reshape(ny, nx)
+    return acc / len(offsets)
+
+
+def footprint_heat_flux_error(mean3d, shape, width_deg, height_deg, tier='tier2'):
+    """
+    Map the error (W m⁻²) a footprint's array makes in the vertically-integrated
+    (0..H) vertical advective heat flux  ρ₀ cp ∫ w ∂T/∂z dz  at every grid point, on
+    the time-mean field -- the heat-flux analogue of footprint_w_error.
+
+    Only the RESOLVED / mean-advection part is representable on a mean field:
+    ⟨w̄⟩·⟨∂zT̄⟩. Advective heating is a PRODUCT of two fields, so time-averaging does
+    not commute through it (⟨w ∂zT⟩ = ⟨w⟩⟨∂zT⟩ + ⟨w′(∂zT)′⟩); the temporal eddy
+    covariance term needs the full series and is NOT in this map. What the product
+    does keep is per-level linearity, so the same plane-fit / area-mean convolution
+    and stencil machinery used for w is reused here, level by level.
+
+      truth : model w (WVEL) × ∂zT multiplied POINT-WISE, then averaged over the
+              footprint (so it keeps the sub-footprint spatial covariance the array
+              cannot see), and integrated over depth.
+      est   : plane-fit continuity w from the footprint's sample points × the
+              array-mean ∂zT, integrated over depth. `tier` (see
+              footprint_sample_offsets) selects the discrete glider stencil (tier 2)
+              or the dense every-cell-in-the-hull fit (tier 1).
+
+    mean3d : dict with time-mean fields on the common tracer grid, from
+             run_footprint_heat_maps' compute phase -- 'U','V','W','dTdz' each
+             (nz, ny, nx) at layer midpoints, plus 'lon','lat' (1-D) and 'dz' (m).
+    Returns an (nlat, nlon) DataArray (W m⁻²) on the tracer grid (coords YC, XC).
+    """
+    from scipy.ndimage import correlate
+    U = np.asarray(mean3d['U'], float); V = np.asarray(mean3d['V'], float)
+    W = np.asarray(mean3d['W'], float); dTdz = np.asarray(mean3d['dTdz'], float)
+    lon = np.asarray(mean3d['lon'], float); lat = np.asarray(mean3d['lat'], float)
+    dz = float(mean3d['dz'])
+    nz, ny, nx = U.shape
+
+    dlon = _grid_spacing_deg(lon); dlat = _grid_spacing_deg(lat)
+    mask = _ellipse_cell_mask(width_deg, height_deg, dlon, dlat)
+    kern = mask.astype(float) / mask.sum()
+
+    # --- estimate: discrete-stencil plane-fit divergence per level, then continuity
+    #     w; array-mean ∂zT (stencil mean of dT/dz) ---
+    offsets = footprint_sample_offsets(shape, width_deg, height_deg, lon, lat, tier)
+    div_est = np.stack([planefit_divergence_stencil(U[k], V[k], lon, lat, offsets)
+                        for k in range(nz)])
+    dTdz_est = _stencil_field_mean(dTdz, lon, lat, offsets)
+
+    # continuity w at layer midpoints (w=0 at the surface): w_iface[k]=Σ_{j<k} δ_j dz,
+    # w_mid[k] = ½(w_iface[k]+w_iface[k+1]) -- matches compute_w_planefit + interp to
+    # the tracer midpoints array_vertical_flux uses.
+    w_iface = np.concatenate([np.zeros((1, ny, nx)), np.cumsum(div_est, axis=0)], 0) * dz
+    w_mid = 0.5 * (w_iface[:-1] + w_iface[1:])
+    heat_est = RHO0 * CP * np.nansum(w_mid * dTdz_est, axis=0) * dz
+
+    # truth: footprint area-mean of the point-wise product, integrated over depth.
+    prod_avg = np.stack([correlate(W[k] * dTdz[k], kern, mode='nearest')
+                         for k in range(nz)])
+    heat_true = RHO0 * CP * np.nansum(prod_avg, axis=0) * dz
+
+    return xr.DataArray(heat_est - heat_true, dims=('YC', 'XC'),
+                        coords={'YC': lat, 'XC': lon})

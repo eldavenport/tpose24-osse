@@ -376,7 +376,7 @@ def report_mask_alignment_caveat():
     closed-form truth and are immune; this only concerns the production maps.)"""
     print('\n  mask-alignment caveat (grid-based truth only; synthetic tests use closed form):')
     for dx in (0.025, 0.035):  # 0.025 -> half/dx integer (aligned); 0.035 -> non-integer
-        mk, _, _ = ot._shape_cell_mask('square', WIDTH, HEIGHT, dx, dx)
+        mk, _, _ = ot._shape_cell_mask('square4', WIDTH, HEIGHT, dx, dx)
         rowsym = np.array_equal(mk, mk[::-1, :])
         aligned = abs((WIDTH / 2) / dx - round((WIDTH / 2) / dx)) < 1e-6
         print(f'    footprint half/dx={WIDTH/2/dx:6.2f}  aligned={aligned!s:5s} '
@@ -386,7 +386,7 @@ def report_mask_alignment_caveat():
             m = pickle.load(f)['means']
         dgrid = ot._grid_spacing_deg(m['VVEL']['XC'].values)
         allsym = True
-        for shp in ('hexagon', 'square', 'square4', 'diamond'):
+        for shp in ('hexagon', 'square4', 'diamond'):
             for w in (0.5, 1.0, 1.5, 2.0):
                 mk, _, _ = ot._shape_cell_mask(shp, w, w, dgrid, dgrid)
                 allsym &= np.array_equal(mk, mk[::-1, :]) and np.array_equal(mk, mk[:, ::-1])

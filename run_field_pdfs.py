@@ -14,11 +14,8 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-from osse_tools import (load_model, load_positions, sample_fields, model_region,
-                        add_density, eddy_anomalies, compute_w_planefit,
-                        model_divergence, dist_stats, plot_field_pdfs,
-                        plot_joint_compare, plot_pdf_compare,
-                        array_vertical_flux, model_vertical_flux, plot_flux_compare)
+from osse_tools import (load_model, load_positions, sample_fields, model_region, add_density, eddy_anomalies, compute_w_planefit, model_divergence, dist_stats, array_vertical_flux, model_vertical_flux)
+from plotting_tools import (plot_field_pdfs, plot_joint_compare, plot_pdf_compare, plot_flux_compare)
 
 RUN_DIR = '/data/SO3/edavenport/tpose24/oct2012_3month_transp_cons'
 ITERS = list(range(36, 26173, 36))

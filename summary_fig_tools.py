@@ -430,6 +430,8 @@ def make_fig2_combined(m, sumdir):
              "w_model_std", "w_est_std"]].mean())
     fig, axes = plt.subplots(2, 3, figsize=(20, 11))
     for (pat, lat), d in g.groupby(["pattern", "center_lat"]):
+        if pat not in PAT_STYLE:            # sym_sweep families have their own figures
+            continue
         d = d.sort_values("width")
         ls, mk = PAT_STYLE[pat]
         plot6(axes, d.width, d, ls=ls, marker=mk, color=LAT_COLORS[lat], lw=1.6,
@@ -679,6 +681,65 @@ F7_Z = 1.96               # 95% CI = mean +/- 1.96 * SE (normal approximation).
 # the multiplier per-config from each cell's n_eff instead of this constant.
 
 
+def _fig7_profiles(rows_labels, load_cell, sumdir, tag, group_lbl):
+    """Render one fig7-style figure: per-config depth profiles of estimated (solid) and
+    true (dotted) time-mean <w> with +/-1.96*SE bands, plus a total-over-depth forest
+    panel. `rows_labels` is a list of (metrics_row, column_label). Shared by make_fig7 and
+    the regular-shape (sym) CI profiles."""
+    ncfg = len(rows_labels)
+    fig, axes = plt.subplots(1, ncfg + 1, figsize=(3.3 * (ncfg + 1), 6.3))
+    axes = np.atleast_1d(axes)
+    # per-config depth profiles (recompute per-depth SE from the saved arrays)
+    profs, lo, hi = [], 0.0, 0.0
+    for r, lbl in rows_labels:
+        with load_cell(r) as ds:
+            B = ot.w_skill_by_depth(ds.w_est, ds.w_model)
+        profs.append((B, lbl))
+        for mean, se in ((B.w_model_mean, B.w_model_mean_se),
+                         (B.w_est_mean, B.w_est_mean_se)):
+            lo = min(lo, float(((mean - F7_Z * se) * W2DAY).min()))
+            hi = max(hi, float(((mean + F7_Z * se) * W2DAY).max()))
+    pad = 0.08 * (hi - lo) or 0.1
+    for ax, (B, lbl) in zip(axes[:ncfg], profs):
+        z = B.depth.values
+        for mean, se, c, ls in ((B.w_model_mean, B.w_model_mean_se, F7_MOD_C, ":"),
+                                (B.w_est_mean, B.w_est_mean_se, F7_EST_C, "-")):
+            mu = mean.values * W2DAY; hw = F7_Z * se.values * W2DAY
+            ax.fill_betweenx(z, mu - hw, mu + hw, color=c, alpha=0.18, lw=0)
+            ax.plot(mu, z, color=c, ls=ls, lw=1.9)
+        ax.axvline(0, color="0.5", lw=0.8, zorder=0)
+        ax.set_title(lbl); ax.set_xlim(lo - pad, hi + pad); ax.grid(alpha=0.3)
+        ax.set_xlabel(r"$\langle w\rangle$  (m day$^{-1}$)")
+    axes[0].set_ylabel("depth (m)")
+    for ax in axes[1:ncfg]:
+        ax.set_yticklabels([])
+
+    # total-over-depth forest panel (column means from the metrics row)
+    axT = axes[ncfg]
+    yv = np.arange(ncfg)[::-1]
+    for y, (r, lbl) in zip(yv, rows_labels):
+        for off, c, mk, mkey, skey in (
+                (+0.15, F7_MOD_C, "o", "w_model_mean", "w_model_mean_se"),
+                (-0.15, F7_EST_C, "s", "w_est_mean",   "w_est_mean_se")):
+            axT.errorbar(r[mkey] * W2DAY, y + off, xerr=F7_Z * r[skey] * W2DAY,
+                         fmt=mk, color=c, capsize=3, ms=6, lw=1.6)
+    axT.axvline(0, color="0.5", lw=0.8)
+    axT.set_yticks(yv); axT.set_yticklabels([lbl for _, lbl in rows_labels])
+    axT.set_ylim(-0.6, ncfg - 0.4)
+    axT.set_xlabel(r"total $\langle w\rangle$  (m day$^{-1}$)")
+    axT.set_title("total over depth"); axT.grid(alpha=0.3, axis="x")
+
+    handles = [Line2D([0], [0], color=F7_EST_C, ls="-", lw=1.9,
+                      marker="s", label=r"estimated ($\pm$95% CI)"),
+               Line2D([0], [0], color=F7_MOD_C, ls=":", lw=1.9,
+                      marker="o", label=r"true / model ($\pm$95% CI)")]
+    fig.tight_layout(rect=[0, 0, 1, 0.9])
+    fig.legend(handles=handles, title=group_lbl, loc="upper center",
+               bbox_to_anchor=(0.5, 1.0), ncol=2, frameon=False)
+    fig.savefig(os.path.join(sumdir, f"fig{tag}.png"), dpi=150, bbox_inches="tight")
+    plt.show()
+
+
 def make_fig7(m, sumdir, load_cell):
     """fig7a-7e: the time-mean vertical velocity <w> and how well it is resolved,
     shown with autocorrelation-aware 95% confidence intervals.
@@ -697,58 +758,7 @@ def make_fig7(m, sumdir, load_cell):
     W = np.isclose(m.width, 0.5)
 
     def _render(rows_labels, tag, group_lbl):
-        ncfg = len(rows_labels)
-        fig, axes = plt.subplots(1, ncfg + 1, figsize=(3.3 * (ncfg + 1), 6.3))
-        axes = np.atleast_1d(axes)
-        # per-config depth profiles (recompute per-depth SE from the saved arrays)
-        profs, lo, hi = [], 0.0, 0.0
-        for r, lbl in rows_labels:
-            with load_cell(r) as ds:
-                B = ot.w_skill_by_depth(ds.w_est, ds.w_model)
-            profs.append((B, lbl))
-            for mean, se in ((B.w_model_mean, B.w_model_mean_se),
-                             (B.w_est_mean, B.w_est_mean_se)):
-                lo = min(lo, float(((mean - F7_Z * se) * W2DAY).min()))
-                hi = max(hi, float(((mean + F7_Z * se) * W2DAY).max()))
-        pad = 0.08 * (hi - lo) or 0.1
-        for ax, (B, lbl) in zip(axes[:ncfg], profs):
-            z = B.depth.values
-            for mean, se, c, ls in ((B.w_model_mean, B.w_model_mean_se, F7_MOD_C, ":"),
-                                    (B.w_est_mean, B.w_est_mean_se, F7_EST_C, "-")):
-                mu = mean.values * W2DAY; hw = F7_Z * se.values * W2DAY
-                ax.fill_betweenx(z, mu - hw, mu + hw, color=c, alpha=0.18, lw=0)
-                ax.plot(mu, z, color=c, ls=ls, lw=1.9)
-            ax.axvline(0, color="0.5", lw=0.8, zorder=0)
-            ax.set_title(lbl); ax.set_xlim(lo - pad, hi + pad); ax.grid(alpha=0.3)
-            ax.set_xlabel(r"$\langle w\rangle$  (m day$^{-1}$)")
-        axes[0].set_ylabel("depth (m)")
-        for ax in axes[1:ncfg]:
-            ax.set_yticklabels([])
-
-        # total-over-depth forest panel (column means from the metrics row)
-        axT = axes[ncfg]
-        yv = np.arange(ncfg)[::-1]
-        for y, (r, lbl) in zip(yv, rows_labels):
-            for off, c, mk, mkey, skey in (
-                    (+0.15, F7_MOD_C, "o", "w_model_mean", "w_model_mean_se"),
-                    (-0.15, F7_EST_C, "s", "w_est_mean",   "w_est_mean_se")):
-                axT.errorbar(r[mkey] * W2DAY, y + off, xerr=F7_Z * r[skey] * W2DAY,
-                             fmt=mk, color=c, capsize=3, ms=6, lw=1.6)
-        axT.axvline(0, color="0.5", lw=0.8)
-        axT.set_yticks(yv); axT.set_yticklabels([lbl for _, lbl in rows_labels])
-        axT.set_ylim(-0.6, ncfg - 0.4)
-        axT.set_xlabel(r"total $\langle w\rangle$  (m day$^{-1}$)")
-        axT.set_title("total over depth"); axT.grid(alpha=0.3, axis="x")
-
-        handles = [Line2D([0], [0], color=F7_EST_C, ls="-", lw=1.9,
-                          marker="s", label=r"estimated ($\pm$95% CI)"),
-                   Line2D([0], [0], color=F7_MOD_C, ls=":", lw=1.9,
-                          marker="o", label=r"true / model ($\pm$95% CI)")]
-        fig.tight_layout(rect=[0, 0, 1, 0.9])
-        fig.legend(handles=handles, title=group_lbl, loc="upper center",
-                   bbox_to_anchor=(0.5, 1.0), ncol=2, frameon=False)
-        fig.savefig(os.path.join(sumdir, f"fig{tag}.png"), dpi=150, bbox_inches="tight")
-        plt.show()
+        _fig7_profiles(rows_labels, load_cell, sumdir, tag, group_lbl)
 
     for tag, pat, glbl in (("7a_shift", "shift", "shift array — cell center lat"),
                            ("7e_shift_hex", "shift_hex", "shift hex array — cell center lat"),
@@ -889,8 +899,8 @@ def make_fig8(m, sumdir, load_cell):
 # Figure builders — exp1 vs exp2 comparison
 # ============================================================================
 EXP_STYLE = {
-    1: dict(ls="-",  fill=True,  lbl="exp1 (no surface extrap)"),
-    2: dict(ls="--", fill=False, lbl="exp2 (extrap to surface)"),
+    1: dict(ls="-",  fill=True,  lbl="no extrapolation"),
+    2: dict(ls="--", fill=False, lbl="with extrapolation"),
 }
 
 
@@ -905,8 +915,8 @@ def exp_handles():
 
 
 # scatter legend for the two experiment fill states (edge carries the key color)
-_EXP_FILL = [Line2D([0], [0], ls="", marker="o", mfc="0.4", mec="0.4", ms=8, label="exp1 (filled)"),
-             Line2D([0], [0], ls="", marker="o", mfc="white", mec="0.4", mew=1.4, ms=8, label="exp2 (open)")]
+_EXP_FILL = [Line2D([0], [0], ls="", marker="o", mfc="0.4", mec="0.4", ms=8, label="no extrapolation (filled)"),
+             Line2D([0], [0], ls="", marker="o", mfc="white", mec="0.4", mew=1.4, ms=8, label="with extrapolation (open)")]
 
 
 def make_fig2abcd_compare(M, outdir):
@@ -970,8 +980,7 @@ def make_fig2abcd_compare(M, outdir):
                       for h, lw in EQS_HEIGHT_LW.items()]
     scat_handles = [Line2D([0], [0], ls="", marker="o", color="0.35", mec="k", mew=0.3,
                            ms=ms, label=f"{h:g} deg tall") for h, ms in EQS_HEIGHT_MS.items()]
-    scat_handles += [Line2D([0], [0], ls="", marker="o", mfc="0.4", mec="0.4", ms=8, label="exp1 (filled)"),
-                     Line2D([0], [0], ls="", marker="o", mfc="white", mec="0.4", mew=1.4, ms=8, label="exp2 (open)")]
+    scat_handles += _EXP_FILL
     axes[0, 3].legend(handles=scat_handles, title="size = height", loc="best", frameon=True, ncol=2)
     equator_single_geometry(axes[1, 3])
     fig.tight_layout(rect=[0, 0, 1, 0.93])
@@ -1387,6 +1396,423 @@ REGHEX_PAIRS = [                       # (reg_config, sweep_pattern, height, nea
 ]
 
 
+SYMHEX_CENTERS = [0.0, 0.5, -0.5]                # cell centers for the regular-hex sweep
+SYM_DIAMS = [0.3, 0.5, 0.75, 1.0]                # E-W diameters (°) for the shape sweeps
+# the three regular-shape families (hexagon/diamond/square) run at the same diameters
+SYM_FAMILIES = ["symhex", "symdia", "symsq"]
+SYM_SHAPE = {"symhex": "hexagon", "symdia": "diamond", "symsq": "square"}
+SYM_MARKER = {"symhex": "h", "symdia": "D", "symsq": "s"}
+
+
+def make_sym_summary(m, sumdir, family="symhex"):
+    """Six-panel w-skill comparison (figure-2 metric order) of a symmetric REGULAR shape
+    family (symhex/symdia/symsq) vs its E-W diameter (0.3/0.5/0.75/1.0°), one line per
+    center latitude (0.0/±0.5°N). x = diameter = 2 × glider lon offset. These are
+    geometrically regular (isotropic) footprints with no moorings, so the sweep isolates
+    how the plane-fit w skill degrades as the footprint shrinks, independent of shape."""
+    shape = SYM_SHAPE[family]
+    d = m[m.family == family].copy()
+    if d.empty:
+        raise ValueError(f"metrics.csv has no {family} configs — run run_experiment_2.py")
+    d["diameter"] = 2.0 * d["width"]
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+    for c in SYMHEX_CENTERS:
+        sub = d[np.isclose(d.center_lat, c)].sort_values("diameter")
+        if sub.empty:
+            continue
+        plot6(axes, sub.diameter, sub, color=LAT_COLORS[c], lw=2.0, marker=SYM_MARKER[family],
+              ms=9, mec="k", mew=0.4, label=f"{c:+.1f}°")
+    label6(axes, f"{shape} diameter (deg)")
+    for a in axes.flat:
+        a.set_xticks([0.3, 0.5, 0.75, 1.0])
+    fig.tight_layout(rect=[0, 0, 1, 0.93])
+    h, l = axes.flat[1].get_legend_handles_labels()
+    fig.legend(h, l, title="cell center latitude", loc="upper center",
+               bbox_to_anchor=(0.5, 1.0), ncol=len(l), frameon=False)
+    out = os.path.join(sumdir, f"fig_{family}_skill_vs_diameter.png")
+    fig.savefig(out, dpi=150, bbox_inches="tight")
+    plt.show()
+    return out
+
+
+def make_symhex_summary(m, sumdir):
+    """Back-compat wrapper — the regular-hexagon w-skill sweep."""
+    return make_sym_summary(m, sumdir, "symhex")
+
+
+def make_sym_shape_summary(m, sumdir, center=0.0):
+    """Six-panel w-skill SHAPE comparison (figure-2 metric order) of the three regular
+    shapes (hexagon/diamond/square) vs E-W diameter at a fixed center latitude, one line
+    per shape. Isolates how the footprint SHAPE — not size — affects plane-fit w skill."""
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+    for fam in SYM_FAMILIES:
+        d = m[(m.family == fam) & np.isclose(m.center_lat, center)].copy()
+        if d.empty:
+            continue
+        d["diameter"] = 2.0 * d["width"]
+        d = d.sort_values("diameter")
+        plot6(axes, d.diameter, d, color=EQS_SHAPE_COLOR[SYM_SHAPE[fam]], lw=2.0,
+              marker=SYM_MARKER[fam], ms=9, mec="k", mew=0.4, label=SYM_SHAPE[fam])
+    label6(axes, "array diameter (deg)")
+    for a in axes.flat:
+        a.set_xticks([0.3, 0.5, 0.75, 1.0])
+    fig.tight_layout(rect=[0, 0, 1, 0.93])
+    h, l = axes.flat[1].get_legend_handles_labels()
+    fig.legend(h, l, title=f"regular shape (center {center:+.1f}°)", loc="upper center",
+               bbox_to_anchor=(0.5, 1.0), ncol=len(l), frameon=False)
+    out = os.path.join(sumdir, f"fig_sym_shape_skill_vs_diameter_c{center:+.1f}.png")
+    fig.savefig(out, dpi=150, bbox_inches="tight")
+    plt.show()
+    return out
+
+
+def _sym_family_rows(m, family, diam):
+    """Metrics rows (one per center latitude, sorted S->N) for a sym family at diameter
+    `diam`°, each paired with a 'center ±x°' column label."""
+    d = m[(m.family == family) & np.isclose(m.width, diam / 2.0)]
+    return [(d[np.isclose(d.center_lat, c)].iloc[0], f"center {c:+.1f}°")
+            for c in sorted(d.center_lat.unique())]
+
+
+def make_fig7_sym(m, sumdir, load_cell, family="symhex", diam=1.0):
+    """fig7-style time-mean <w> +/-95% CI depth profiles for one regular-shape family at a
+    representative diameter, one column per center latitude (+ total-over-depth forest) —
+    shows how the LATITUDE affects the resolved <w> at each depth. Reuses `_fig7_profiles`."""
+    rows = _sym_family_rows(m, family, diam)
+    if not rows:
+        raise ValueError(f"metrics.csv has no {family} cells at diameter {diam}°")
+    _fig7_profiles(rows, load_cell, sumdir, f"7_{family}_d{diam:g}",
+                   f"{SYM_SHAPE[family]}, {diam:g}° diameter — cell center latitude")
+
+
+def make_fig7_sym_shapes(m, sumdir, load_cell, center=0.0, diam=1.0):
+    """fig7-style time-mean <w> +/-95% CI depth profiles COMPARING the three regular shapes
+    (hexagon/diamond/square) at one center latitude and diameter, one column per shape (+
+    total-over-depth forest) — shows how the SHAPE affects the resolved <w> at each depth."""
+    rows = []
+    for fam in SYM_FAMILIES:
+        d = m[(m.family == fam) & np.isclose(m.width, diam / 2.0)
+              & np.isclose(m.center_lat, center)]
+        if not d.empty:
+            rows.append((d.iloc[0], SYM_SHAPE[fam]))
+    if not rows:
+        raise ValueError(f"metrics.csv has no sym cells at center {center}°, diameter {diam}°")
+    _fig7_profiles(rows, load_cell, sumdir, f"7_sym_shapes_c{center:+.1f}_d{diam:g}",
+                   f"regular shapes, {diam:g}° diameter @ center {center:+.1f}°")
+
+
+def make_sym_w_scatter(data_dir, sumdir, family):
+    """Estimated-vs-true w scatter for one regular-shape family: a grid with rows = center
+    latitude and columns = E-W diameter. Each panel pools every (time, depth) sample of the
+    array's plane-fit w (est) against the model-truth hull-mean w (true), a subsample plotted
+    colored by depth, with the 1:1 line and the correlation. All panels share limits."""
+    import xarray as xr
+    rng = np.random.default_rng(0)
+    nrow, ncol = len(SYMHEX_CENTERS), len(SYM_DIAMS)
+    centers = sorted(SYMHEX_CENTERS)                         # S -> N down the rows
+    # load once; gather points and a shared symmetric limit + depth range
+    pts, lim, zmax = {}, 0.0, 0.0
+    for c in centers:
+        for d in SYM_DIAMS:
+            cfg = f"{family}_d{d}_c{c:+.1f}"
+            with xr.open_dataset(os.path.join(data_dir, f"{cfg}__cell_{c:+.2f}.nc")) as ds:
+                zt = np.broadcast_to(np.abs(ds.depth.values)[None, :], ds.w_est.shape)
+                x = (ds.w_model.values * W2DAY).ravel()
+                y = (ds.w_est.values * W2DAY).ravel()
+                z = zt.ravel()
+            g = np.isfinite(x) & np.isfinite(y)
+            x, y, z = x[g], y[g], z[g]
+            if x.size > 8000:
+                sel = rng.choice(x.size, 8000, replace=False); x, y, z = x[sel], y[sel], z[sel]
+            pts[(c, d)] = (x, y, z)
+            lim = max(lim, np.nanpercentile(np.abs(np.concatenate([x, y])), 99.5))
+            zmax = max(zmax, float(z.max()) if z.size else 0.0)
+    fig, axes = plt.subplots(nrow, ncol, figsize=(4.0 * ncol, 3.9 * nrow),
+                             sharex=True, sharey=True, squeeze=False)
+    sc = None
+    for i, c in enumerate(centers):
+        for j, d in enumerate(SYM_DIAMS):
+            ax = axes[i, j]
+            x, y, z = pts[(c, d)]
+            ax.plot([-lim, lim], [-lim, lim], color="0.4", lw=1.0, zorder=1)
+            sc = ax.scatter(x, y, c=z, cmap="viridis", vmin=0, vmax=zmax, s=4, alpha=0.35,
+                            linewidths=0, zorder=2, rasterized=True)
+            r = np.corrcoef(x, y)[0, 1] if x.size > 2 else np.nan
+            ax.text(0.04, 0.93, f"r = {r:.3f}", transform=ax.transAxes, fontsize=9,
+                    va="top", bbox=dict(fc="w", ec="none", alpha=0.7))
+            ax.set_xlim(-lim, lim); ax.set_ylim(-lim, lim); ax.set_aspect("equal")
+            ax.grid(alpha=0.25)
+            if i == 0:
+                ax.set_title(f"diameter {d:g}°", fontsize=12)
+            if j == 0:
+                ax.set_ylabel(f"center {c:+.1f}°\nest w  (m day$^{{-1}}$)", fontsize=10)
+            if i == nrow - 1:
+                ax.set_xlabel(r"true w  (m day$^{-1}$)", fontsize=10)
+    cb = fig.colorbar(sc, ax=axes, fraction=0.025, pad=0.01)
+    cb.set_label("depth (m)")
+    fig.suptitle(f"{SYM_SHAPE[family]}: estimated vs true w  (all depths & times)",
+                 y=0.995, fontsize=14)
+    out = os.path.join(sumdir, f"fig_{family}_w_scatter.png")
+    fig.savefig(out, dpi=150, bbox_inches="tight")
+    plt.show()
+    return out
+
+
+# diameter is encoded by shading (light -> dark with increasing diameter), not marker shape
+SYM_DIAM_FRAC = {d: 0.30 + 0.70 * i / (len(SYM_DIAMS) - 1) for i, d in enumerate(SYM_DIAMS)}
+
+
+def _shade(color, frac):
+    """Blend `color` toward white; frac=1 -> full color, frac->0 -> white."""
+    from matplotlib.colors import to_rgb
+    return tuple(1.0 - frac + frac * np.array(to_rgb(color)))
+
+
+def make_sym_w_scatter_deepest(data_dir, sumdir):
+    """One summary figure, three subplots (hexagon / diamond / square). Each panel scatters
+    the TIME-MEAN estimated vs true `w` at the DEEPEST observed level — one point per config,
+    overlaying every center latitude (color hue) and E-W diameter (shading, light->dark) so
+    the whole sweep sits on one plot, with the 1:1 line. Companion to the per-family
+    full-depth grids (`make_sym_w_scatter`)."""
+    import xarray as xr
+    centers = sorted(SYMHEX_CENTERS)
+    # one (time-mean true, time-mean est) point per (family, center, diameter)
+    pts, vmin, vmax, zdeep = {}, np.inf, -np.inf, None
+    for fam in SYM_FAMILIES:
+        for c in centers:
+            for d in SYM_DIAMS:
+                cfg = f"{fam}_d{d}_c{c:+.1f}"
+                with xr.open_dataset(os.path.join(data_dir, f"{cfg}__cell_{c:+.2f}.nc")) as ds:
+                    kd = int(np.argmax(np.abs(ds.depth.values)))    # deepest obs midpoint
+                    zdeep = float(np.abs(ds.depth.values)[kd])
+                    x = float(ds.w_model.isel(depth=kd).mean("time")) * W2DAY
+                    y = float(ds.w_est.isel(depth=kd).mean("time")) * W2DAY
+                pts[(fam, c, d)] = (x, y)
+                vmin, vmax = min(vmin, x, y), max(vmax, x, y)
+    pad = 0.08 * (vmax - vmin)
+    lo, hi = vmin - pad, vmax + pad                    # shared square limits over the data
+    fig, axes = plt.subplots(1, len(SYM_FAMILIES), figsize=(5.3 * len(SYM_FAMILIES), 5.4),
+                             sharex=True, sharey=True)
+    for ax, fam in zip(np.atleast_1d(axes), SYM_FAMILIES):
+        ax.plot([lo, hi], [lo, hi], color="0.4", lw=1.0, zorder=1)
+        for c in centers:
+            for d in SYM_DIAMS:
+                x, y = pts[(fam, c, d)]
+                ax.scatter(x, y, s=95, marker="o", color=_shade(LAT_COLORS[c], SYM_DIAM_FRAC[d]),
+                           edgecolor="k", linewidths=0.6, zorder=3)
+        ax.set_xlim(lo, hi); ax.set_ylim(lo, hi); ax.set_aspect("equal")
+        ax.grid(alpha=0.25)
+        ax.set_title(SYM_SHAPE[fam], fontsize=13)
+        ax.set_xlabel(r"true $\langle w\rangle$  (m day$^{-1}$)")
+    np.atleast_1d(axes)[0].set_ylabel(r"est $\langle w\rangle$  (m day$^{-1}$)")
+    c_handles = [Line2D([], [], marker="o", ls="", color=LAT_COLORS[c], ms=9,
+                        label=f"center {c:+.1f}°") for c in centers]
+    # diameter legend: the shading ramp (light -> dark) on a neutral gray base
+    d_handles = [Line2D([], [], marker="o", ls="", color=_shade("#444444", SYM_DIAM_FRAC[d]),
+                        markeredgecolor="k", markeredgewidth=0.5, ms=9,
+                        label=f"diameter {d:g}°") for d in SYM_DIAMS]
+    leg1 = fig.legend(handles=c_handles, loc="upper left", bbox_to_anchor=(0.10, 1.0),
+                      ncol=len(centers), frameon=False, fontsize=10)
+    fig.add_artist(leg1)
+    fig.legend(handles=d_handles, loc="upper right", bbox_to_anchor=(0.92, 1.0),
+               ncol=len(SYM_DIAMS), frameon=False, fontsize=10)
+    fig.suptitle(f"time-mean estimated vs true w at the deepest observed level (~{zdeep:.0f} m)",
+                 y=1.06, fontsize=14)
+    out = os.path.join(sumdir, "fig_sym_w_scatter_deepest.png")
+    fig.savefig(out, dpi=150, bbox_inches="tight")
+    plt.show()
+    return out
+
+
+# ---------------------------------------------------------------------------
+# sym_sweep exp1-vs-exp2 comparison builders. Experiment is encoded ONLY by line
+# style (exp1 solid / exp2 dashed) and marker fill (exp1 filled / exp2 open) — never
+# by a new marker shape, which stays reserved for the shape family (hexagon/diamond/
+# square). M = {1: metrics_df, 2: metrics_df}; DATA = {1: data_dir, 2: data_dir}.
+#
+# Because experiment_1 samples a shallower column than experiment_2 (8–70 vs 0–80 m),
+# the compare figures contrast the two at the DEEPEST SHARED observed depth rather than
+# over each experiment's own column — see sym_deepest_shared_metrics (w-skill) and the
+# heat-flux reducers. Pass its recomputed Mc (and zshared) into the builders below.
+# ---------------------------------------------------------------------------
+def sym_deepest_shared_metrics(M, DATA):
+    """Recompute the sym-family w-skill metrics for BOTH experiments AT the deepest depth
+    level observed in both (experiment_1's sampled column stops shallower than
+    experiment_2's), so the compare figures contrast them at the same single level instead
+    of over each experiment's own depth range. Returns ({1: df, 2: df}, z_shared_m)."""
+    import pandas as pd
+    import xarray as xr
+    Mc = {1: [], 2: []}
+    zshared = None
+    for _, r in M[1][M[1].family.isin(SYM_FAMILIES)].iterrows():
+        base = os.path.basename(r.nc_path)
+        dss = {e: xr.open_dataset(os.path.join(DATA[e], base)).load() for e in (1, 2)}
+        common_z = min(float(np.abs(dss[e].depth.values).max()) for e in (1, 2))
+        zshared = common_z
+        for e in (1, 2):
+            kd = int(np.argmin(np.abs(np.abs(dss[e].depth.values) - common_z)))
+            met = ot.w_skill_metrics(dss[e].w_est.isel(depth=[kd]),
+                                     dss[e].w_model.isel(depth=[kd]))
+            row = M[e][(M[e].config == r.config)
+                       & np.isclose(M[e].center_lat, r.center_lat)].iloc[0].to_dict()
+            row.update(met)
+            Mc[e].append(row)
+        for e in (1, 2):
+            dss[e].close()
+    return {e: pd.DataFrame(Mc[e]) for e in (1, 2)}, zshared
+
+
+def _deepest_shared_suptitle(fig, zshared):
+    if zshared is not None:
+        fig.suptitle(f"w-skill at the deepest observed depth shared by both experiments "
+                     f"(~{zshared:.0f} m)", y=1.06, fontsize=13)
+
+
+def make_sym_summary_compare(M, sumdir, family="symhex", zshared=None):
+    """exp1 (solid/filled) vs exp2 (dashed/open) overlay of `make_sym_summary`: a regular
+    shape family's six-panel w-skill (figure-2 metric order) vs E-W diameter, one colour
+    per centre latitude. The two experiments differ only in the surface w treatment, so
+    the gap between the solid (exp1) and dashed (exp2) curves is the effect of that choice."""
+    shape = SYM_SHAPE[family]
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+    for exp in (1, 2):
+        st = EXP_STYLE[exp]
+        d = M[exp][M[exp].family == family].copy()
+        if d.empty:
+            continue
+        d["diameter"] = 2.0 * d["width"]
+        for c in SYMHEX_CENTERS:
+            sub = d[np.isclose(d.center_lat, c)].sort_values("diameter")
+            if sub.empty:
+                continue
+            plot6(axes, sub.diameter, sub, color=LAT_COLORS[c], ls=st["ls"], lw=2.0,
+                  marker=SYM_MARKER[family], ms=9, mec="k", mew=0.4,
+                  mfc=mfc(exp, LAT_COLORS[c]))
+    label6(axes, f"{shape} diameter (deg)")
+    for a in axes.flat:
+        a.set_xticks([0.3, 0.5, 0.75, 1.0])
+    fig.tight_layout(rect=[0, 0, 1, 0.9])
+    lat_handles = [Line2D([0], [0], color=LAT_COLORS[c], lw=2.0, marker=SYM_MARKER[family],
+                          mec="k", mew=0.4, label=f"{c:+.1f}°") for c in SYMHEX_CENTERS]
+    lg1 = fig.legend(lat_handles, [h.get_label() for h in lat_handles],
+                     title="cell center latitude", loc="upper center",
+                     bbox_to_anchor=(0.35, 1.0), ncol=len(lat_handles), frameon=False)
+    fig.add_artist(lg1)
+    fig.legend(handles=exp_handles(), title="experiment", loc="upper center",
+               bbox_to_anchor=(0.8, 1.0), ncol=1, frameon=False, handlelength=3.0)
+    _deepest_shared_suptitle(fig, zshared)
+    out = os.path.join(sumdir, f"fig_{family}_skill_vs_diameter_compare.png")
+    fig.savefig(out, dpi=150, bbox_inches="tight")
+    plt.show()
+    return out
+
+
+def make_sym_shape_summary_compare(M, sumdir, center=0.0, zshared=None):
+    """exp1 (solid/filled) vs exp2 (dashed/open) overlay of `make_sym_shape_summary`: the
+    three regular shapes (colour) vs E-W diameter at a fixed centre latitude, six-panel
+    w-skill. Shape = colour + marker, experiment = line style + marker fill. When `zshared`
+    is given (via sym_deepest_shared_metrics) the metrics are at the deepest shared depth."""
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+    for exp in (1, 2):
+        st = EXP_STYLE[exp]
+        for fam in SYM_FAMILIES:
+            d = M[exp][(M[exp].family == fam) & np.isclose(M[exp].center_lat, center)].copy()
+            if d.empty:
+                continue
+            d["diameter"] = 2.0 * d["width"]
+            d = d.sort_values("diameter")
+            col = EQS_SHAPE_COLOR[SYM_SHAPE[fam]]
+            plot6(axes, d.diameter, d, color=col, ls=st["ls"], lw=2.0,
+                  marker=SYM_MARKER[fam], ms=9, mec="k", mew=0.4, mfc=mfc(exp, col))
+    label6(axes, "array diameter (deg)")
+    for a in axes.flat:
+        a.set_xticks([0.3, 0.5, 0.75, 1.0])
+    fig.tight_layout(rect=[0, 0, 1, 0.9])
+    shape_handles = [Line2D([0], [0], color=EQS_SHAPE_COLOR[SYM_SHAPE[f]], lw=2.0,
+                            marker=SYM_MARKER[f], mec="k", mew=0.4, label=SYM_SHAPE[f])
+                     for f in SYM_FAMILIES]
+    lg1 = fig.legend(shape_handles, [h.get_label() for h in shape_handles],
+                     title=f"regular shape (center {center:+.1f}°)", loc="upper center",
+                     bbox_to_anchor=(0.35, 1.0), ncol=3, frameon=False)
+    fig.add_artist(lg1)
+    fig.legend(handles=exp_handles(), title="experiment", loc="upper center",
+               bbox_to_anchor=(0.8, 1.0), ncol=1, frameon=False, handlelength=3.0)
+    _deepest_shared_suptitle(fig, zshared)
+    out = os.path.join(sumdir, f"fig_sym_shape_skill_vs_diameter_c{center:+.1f}_compare.png")
+    fig.savefig(out, dpi=150, bbox_inches="tight")
+    plt.show()
+    return out
+
+
+def make_sym_w_scatter_deepest_compare(DATA, sumdir):
+    """No-extrapolation (filled) vs with-extrapolation (open) overlay of
+    `make_sym_w_scatter_deepest`: time-mean estimated-vs-true ⟨w⟩ at the deepest level
+    COMMON to both experiments (exp1's column stops shallower, so both are read at that
+    same depth), one point per config (colour hue = centre latitude, shading light→dark =
+    E-W diameter), three shape panels. Experiment is the marker fill only."""
+    import xarray as xr
+    centers = sorted(SYMHEX_CENTERS)
+    # deepest observed level present in BOTH experiments (compare at the same depth)
+    ref = f"{SYM_FAMILIES[0]}_d{SYM_DIAMS[0]}_c{centers[0]:+.1f}"
+    zmax = {}
+    for exp in (1, 2):
+        with xr.open_dataset(os.path.join(DATA[exp], f"{ref}__cell_{centers[0]:+.2f}.nc")) as ds:
+            zmax[exp] = float(np.abs(ds.depth.values).max())
+    common_z = min(zmax.values())
+    pts, vmin, vmax = {}, np.inf, -np.inf
+    for exp in (1, 2):
+        for fam in SYM_FAMILIES:
+            for c in centers:
+                for d in SYM_DIAMS:
+                    cfg = f"{fam}_d{d}_c{c:+.1f}"
+                    with xr.open_dataset(os.path.join(DATA[exp], f"{cfg}__cell_{c:+.2f}.nc")) as ds:
+                        kd = int(np.argmin(np.abs(np.abs(ds.depth.values) - common_z)))
+                        x = float(ds.w_model.isel(depth=kd).mean("time")) * W2DAY
+                        y = float(ds.w_est.isel(depth=kd).mean("time")) * W2DAY
+                    pts[(exp, fam, c, d)] = (x, y)
+                    vmin, vmax = min(vmin, x, y), max(vmax, x, y)
+    pad = 0.08 * (vmax - vmin)
+    lo, hi = vmin - pad, vmax + pad
+    fig, axes = plt.subplots(1, len(SYM_FAMILIES), figsize=(5.3 * len(SYM_FAMILIES), 5.4),
+                             sharex=True, sharey=True)
+    for ax, fam in zip(np.atleast_1d(axes), SYM_FAMILIES):
+        ax.plot([lo, hi], [lo, hi], color="0.4", lw=1.0, zorder=1)
+        for exp in (1, 2):
+            for c in centers:
+                for d in SYM_DIAMS:
+                    x, y = pts[(exp, fam, c, d)]
+                    col = _shade(LAT_COLORS[c], SYM_DIAM_FRAC[d])
+                    ax.scatter(x, y, s=95, marker="o", color=mfc(exp, col),
+                               edgecolor=(col if exp == 2 else "k"),
+                               linewidths=(1.4 if exp == 2 else 0.6), zorder=3)
+        ax.set_xlim(lo, hi); ax.set_ylim(lo, hi); ax.set_aspect("equal")
+        ax.grid(alpha=0.25)
+        ax.set_title(SYM_SHAPE[fam], fontsize=13)
+        ax.set_xlabel(r"true $\langle w\rangle$  (m day$^{-1}$)")
+    np.atleast_1d(axes)[0].set_ylabel(r"est $\langle w\rangle$  (m day$^{-1}$)")
+    c_handles = [Line2D([], [], marker="o", ls="", color=LAT_COLORS[c], ms=9,
+                        label=f"center {c:+.1f}°") for c in centers]
+    d_handles = [Line2D([], [], marker="o", ls="", color=_shade("#444444", SYM_DIAM_FRAC[d]),
+                        markeredgecolor="k", markeredgewidth=0.5, ms=9,
+                        label=f"diameter {d:g}°") for d in SYM_DIAMS]
+    # two legend rows so nothing overlaps: centre (left) + diameter (right) on top,
+    # the experiment fill key centred just below.
+    leg1 = fig.legend(handles=c_handles, loc="upper left", bbox_to_anchor=(0.09, 1.14),
+                      ncol=len(centers), frameon=False, fontsize=10)
+    fig.add_artist(leg1)
+    leg2 = fig.legend(handles=d_handles, loc="upper right", bbox_to_anchor=(0.93, 1.14),
+                      ncol=len(SYM_DIAMS), frameon=False, fontsize=10)
+    fig.add_artist(leg2)
+    fig.legend(handles=_EXP_FILL, loc="upper center", bbox_to_anchor=(0.5, 1.05),
+               ncol=2, frameon=False, fontsize=10)
+    fig.suptitle(f"time-mean est vs true w at the deepest level common to both experiments "
+                 f"(~{common_z:.0f} m)", y=1.22, fontsize=13)
+    out = os.path.join(sumdir, "fig_sym_w_scatter_deepest_compare.png")
+    fig.savefig(out, dpi=150, bbox_inches="tight")
+    plt.show()
+    return out
+
+
 def _reghex_get(m, cfg):
     d = m[m.config == cfg]
     if d.empty:
@@ -1400,7 +1826,7 @@ def _reghex_panels(ax, m, sweep_ls="-", reg_filled=True, sweep_alpha=0.45):
     hexagon (marker at its own width) + the nearest irregular width (open marker).
 
     The sweep is essential context: the regular hexagon is SMALLER than its nearest
-    irregular neighbour (off = sqrt(3)/2 * half), and skill varies strongly with
+    irregular neighbor (off = sqrt(3)/2 * half), and skill varies strongly with
     width, so comparing the two configs alone confounds regularity with size.
     """
     c = EQS_SHAPE_COLOR["hexagon"]
@@ -1432,7 +1858,7 @@ def _reghex_panels(ax, m, sweep_ls="-", reg_filled=True, sweep_alpha=0.45):
 def make_fig_reghex(m, sumdir):
     """
     Six-panel skill comparison (figure-2 metric order) of the two REGULAR equator
-    hexagons (stars) against their nearest irregular neighbours (open circles),
+    hexagons (stars) against their nearest irregular neighbors (open circles),
     over the faint irregular width sweep that supplies the size context.
     """
     c = EQS_SHAPE_COLOR["hexagon"]

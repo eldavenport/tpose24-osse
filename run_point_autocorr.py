@@ -26,8 +26,16 @@ Two phases (mode ∈ {all, compute, plot}): COMPUTE reads the model once and pic
 full-domain result arrays to CACHE; PLOT renders full + crop from the cache with no model
 access. Reuses RUN_DIR / ITERS / PERIODS from run_domain_maps.
 
+An optional averaging arg (avg ∈ {native, 5day}) controls the sampling used for the
+correlations. 'native' (default) uses the raw 3-hourly diag_state records and writes to
+.../autocorr_point/ (the original figures). '5day' first resamples the record to
+non-overlapping 5-day means and writes to .../autocorr_point/5_day/ with its own cache,
+so the native outputs are left untouched -- letting you compare decorrelation structure
+across averaging intervals.
+
 Usage:
-    python run_point_autocorr.py [mode]
+    python run_point_autocorr.py [mode] [avg]
+    e.g. python run_point_autocorr.py all 5day     # 5-day means -> autocorr_point/5_day/
 """
 
 import os
@@ -53,6 +61,18 @@ PLOT_MAXDEPTH = 200                         # depth-section display depth (m)
 READ_MAXDEPTH = 250                         # water column read for the sections
 PERIOD = '3mo'                              # 3-month window only
 UVW_COLORS = ['#1b6ca8', '#c0392b', '#2e7d32']
+
+# Time-averaging variants. The native run uses the raw 3-hourly diag_state records;
+# the '5day' variant resamples the record to non-overlapping 5-day means BEFORE any
+# correlation is computed (so dt_days, the ACFs, e-folding scales, one-point maps and
+# sections all reflect the coarser sampling) to test how much the decorrelation
+# structure depends on the averaging interval.  tag -> (pandas resample rule, subdir).
+AVG_OPTS = {
+    'native': (None, 'autocorr_point'),
+    '5day':   ('5D', os.path.join('autocorr_point', '5_day')),
+}
+RESAMPLE = None                             # pandas resample rule or None (set in main)
+SUBDIR = 'autocorr_point'                   # output subfolder under each domain view
 CACHE = os.path.join(CACHE_DIR, 'point_autocorr_crop140.pkl')
 
 
@@ -104,6 +124,10 @@ def _crop_trans(r, coord, z, lim):
 def compute():
     tsel = PERIODS[PERIOD][0]
     ds = ot.load_model(RUN_DIR, ITERS).sel(time=tsel)
+    if RESAMPLE is not None:
+        # non-overlapping time means (e.g. 5-day) before any correlation is computed
+        ds = ds.resample(time=RESAMPLE).mean()
+        sys.stderr.write(f'  resampled to {RESAMPLE} means\n')
     times = ds.time.values
     t_days = (times - times[0]) / np.timedelta64(1, 'D')
     dt_days = float(np.mean(np.diff(t_days)))
@@ -187,7 +211,7 @@ def plot(R):
     variants = [('full_domain', None, None, None),
                 ('crop_140', (lonlim, latlim), lonlim, latlim)]
     for sub, box, lonclip, latclip in variants:
-        outdir = os.path.join(OUTDIR, sub, 'autocorr_point')
+        outdir = os.path.join(OUTDIR, sub, SUBDIR)
         os.makedirs(outdir, exist_ok=True)
         _render(R, base, outdir, box, lonclip, latclip)
         sys.stderr.write(f'  plotted {sub}\n')
@@ -285,7 +309,13 @@ def _render(R, base, outdir, box, lonclip, latclip):
                 colors=UVW_COLORS)
 
 
-def main(mode):
+def main(mode, avg='native'):
+    global RESAMPLE, SUBDIR, CACHE
+    if avg not in AVG_OPTS:
+        raise SystemExit(f'unknown avg {avg!r}; choose from {list(AVG_OPTS)}')
+    RESAMPLE, SUBDIR = AVG_OPTS[avg]
+    if avg != 'native':                     # keep the native cache/outputs untouched
+        CACHE = os.path.join(CACHE_DIR, f'point_autocorr_crop140_{avg}.pkl')
     if mode in ('all', 'compute'):
         R = compute()
     else:
@@ -296,4 +326,7 @@ def main(mode):
 
 
 if __name__ == '__main__':
-    main(sys.argv[1] if len(sys.argv) > 1 else 'all')
+    args = sys.argv[1:]
+    _mode = args[0] if len(args) > 0 else 'all'
+    _avg = args[1] if len(args) > 1 else 'native'
+    main(_mode, _avg)
