@@ -9,18 +9,24 @@ placement null (draw n_platform points at random from the truth) so a small samp
 inherent penalty is separated from real geometry effects; plus the first three moments
 (mean, std, skew).  Distributions are also FIT (skew-normal) to summarise shape.
 
-Figures -> distributions/
+The truth is defined two ways, each written to its own subfolder:
+  distributions/array_truth/   truth = the whole disk footprint (every grid point x time).
+  distributions/center_truth/  truth = just the single grid cell at 0degN,140degW x time
+                               (a virtual mooring); the array estimate is unchanged.
+
+Figures (in each subfolder)
   pdf_panels_d{diam}_{depth}.png   array (step) vs truth (filled) PDFs per variable,
                                    annotated JS / Wasserstein and their nulls.
   js_summary.png                   JS - JS_null vs diameter, one line per variable.
   moment_recovery.png              std ratio and skew, array vs truth, vs diameter.
-  fit_distributions.png            skew-normal fits to w, T' and w'T', array vs truth.
-  fit_distributions_shapes_d1.png  the same fits with columns = diamond/square/hexagon
-                                   (equatorial regular arrays) at fixed 1deg diameter.
+  fit_distributions_{depth}.png    skew-normal fits to w, T' and w'T', array vs truth.
+  fit_distributions_shapes_d{d}_{depth}.png  the same fits with columns = diamond/square/
+                                   hexagon (equatorial regular arrays) at fixed diameter.
 
 Usage:  python run_distributions.py
 """
 
+import os
 import re
 
 import numpy as np
@@ -41,6 +47,11 @@ VARS = [('T', 1.0, '$^\\circ$C'), ('S', 1.0, 'g kg$^{-1}$'),
         ('kappaT', 1.0, 'm$^2$ s$^{-1}$'), ('N2', 1.0, 's$^{-2}$')]
 FLAGSHIP = 1.0
 DEPTH = -30.0
+# fit_distributions figures are rendered at each of these depths. -79 m is the deepest
+# sampled 2 m layer (the 78-80 m bin); we label it "80 m" to match the heat-flux depth.
+FIT_DEPTHS = [(-30.0, '30m'), (-79.0, '80m')]
+# diameters at which the cross-shape comparison (diamond/square/hexagon) is drawn
+SHAPE_DIAMS = [0.3, 1.0]
 
 
 def _pool(ds, var, space_dim, z):
@@ -50,9 +61,28 @@ def _pool(ds, var, space_dim, z):
     return np.asarray(da.values).ravel()
 
 
+# --------------------------------------------------------------------------- truth source
+# Two definitions of the model "truth" the array is scored against:
+#   'array'  -> the whole disk footprint (every grid point x time) — spatial variability.
+#   'center' -> just the single grid cell at 0degN,140degW (a virtual mooring) x time.
+def _at_center(cloud):
+    """Subset the disk point cloud to the single grid cell nearest 0degN,140degW."""
+    clat, clon = C.CENTER
+    d2 = (cloud['YC'] - clat) ** 2 + (cloud['XC'] - clon) ** 2
+    return cloud.isel(point=[int(d2.argmin('point'))])
+
+
+def _truth_cloud(cloud, truth):
+    return cloud if truth == 'array' else _at_center(cloud)
+
+
+def _truth_label(truth):
+    return 'model truth (disk)' if truth == 'array' else 'model truth (centre point)'
+
+
 # --------------------------------------------------------------------------- fig 1
-def fig_pdf_panels(out, diam=FLAGSHIP, z=DEPTH):
-    arr = P.load_array(diam); cloud = P.load_cloud(diam)
+def fig_pdf_panels(out, diam=FLAGSHIP, z=DEPTH, truth='array'):
+    arr = P.load_array(diam); cloud = _truth_cloud(P.load_cloud(diam), truth)
     n_plat = arr.sizes['glider']
     fig, axes = plt.subplots(2, 4, figsize=(15, 7.5))
     for ax, (var, scale, unit) in zip(axes.ravel(), VARS):
@@ -71,7 +101,7 @@ def fig_pdf_panels(out, diam=FLAGSHIP, z=DEPTH):
                 transform=ax.transAxes, va='top', fontsize=9,
                 bbox=dict(fc='white', ec='0.8', alpha=0.8))
     axes.ravel()[-1].axis('off')
-    fig.legend(handles=[Line2D([0], [0], color='0.6', lw=8, alpha=0.55, label='model truth (hull)'),
+    fig.legend(handles=[Line2D([0], [0], color='0.6', lw=8, alpha=0.55, label=_truth_label(truth)),
                         Line2D([0], [0], color='#08306b', lw=2.2, label='array samples')],
                loc='upper center', ncol=2, frameon=False, bbox_to_anchor=(0.5, 1.02))
     zlab = 'depth-avg' if z is None else f'{-z:g} m'
@@ -81,13 +111,13 @@ def fig_pdf_panels(out, diam=FLAGSHIP, z=DEPTH):
 
 
 # --------------------------------------------------------------------------- fig 2
-def fig_js_summary(out, z=None):
+def fig_js_summary(out, z=None, truth='array'):
     fig, ax = plt.subplots(figsize=(8.5, 5.5))
     cmap = plt.cm.tab10
     for vi, (var, scale, _) in enumerate(VARS):
         vals = []
         for d in C.DIAMETERS:
-            arr = P.load_array(d); cloud = P.load_cloud(d)
+            arr = P.load_array(d); cloud = _truth_cloud(P.load_cloud(d), truth)
             o = _pool(arr, var, 'glider', z) * scale
             t = _pool(cloud, var, 'point', z) * scale
             js, _ = P.js_wass(o, t); jsn, _ = P.js_wass_null(o, t, arr.sizes['glider'])
@@ -101,13 +131,13 @@ def fig_js_summary(out, z=None):
 
 
 # --------------------------------------------------------------------------- fig 3
-def fig_moment_recovery(out, z=None):
+def fig_moment_recovery(out, z=None, truth='array'):
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
     cmap = plt.cm.tab10
     for vi, (var, scale, _) in enumerate(VARS):
         sr, ska, skt = [], [], []
         for d in C.DIAMETERS:
-            arr = P.load_array(d); cloud = P.load_cloud(d)
+            arr = P.load_array(d); cloud = _truth_cloud(P.load_cloud(d), truth)
             o = _pool(arr, var, 'glider', z) * scale
             t = _pool(cloud, var, 'point', z) * scale
             mo = P.moments(o); mt = P.moments(t)
@@ -126,40 +156,59 @@ def fig_moment_recovery(out, z=None):
 
 
 # --------------------------------------------------------------------------- fig 4
-def _fit_samples(diam, z, shape='symhex'):
-    """(array, truth) 1-D samples of w, T', w'T' and w'u' at depth z for one config."""
+def _cloud_flux(cloud, avar, bvar, z):
+    """Vertical eddy flux a'b' at depth z from the point cloud (per-point time anomalies)."""
+    ap = cloud[avar] - cloud[avar].mean('time')
+    bp = cloud[bvar] - cloud[bvar].mean('time')
+    return np.asarray((ap * bp).interp(obs_depth=z).values).ravel()
+
+
+def _fit_samples(diam, z, shape='symhex', truth='array'):
+    """(array, truth) 1-D samples of w, T', w'T' and w'u' at depth z for one config.
+
+    truth='array' scores against the whole disk footprint (cloud pool + disk-mean flux
+    from `hull`); truth='center' scores against the single centre grid cell only.
+    """
     import run_transport as T
     arr = P.load_array(diam, shape); hull = P.load_hull(diam, shape)
-    cloud = P.load_cloud(diam, shape)
+    cloud = _truth_cloud(P.load_cloud(diam, shape), truth)
 
     def anom(ds):                                       # pooled T fluctuation about time mean
         a = (ds['T'] - ds['T'].mean('time')).interp(obs_depth=z)
         return np.asarray(a.values).ravel()
 
+    def tflux(bvar, hullkey):                            # truth vertical eddy flux w'b'
+        if truth == 'array':
+            return np.asarray(hull[hullkey].interp(obs_depth=z).values).ravel()
+        return _cloud_flux(cloud, 'W', bvar, z)
+
     w = (np.asarray(arr['w_est_mid'].interp(obs_depth=z).values).ravel() * C.SEC_PER_DAY,
          _pool(cloud, 'W', 'point', z) * C.SEC_PER_DAY)
     Tp = (anom(arr), anom(cloud))
     wT = (np.asarray(T.array_vert_flux(arr, 'w_est_mid', 'T').interp(obs_depth=z).values).ravel() * C.HFLUX,
-          np.asarray(hull['wT'].interp(obs_depth=z).values).ravel() * C.HFLUX)
+          tflux('T', 'wT') * C.HFLUX)
     wU = (np.asarray(T.array_vert_flux(arr, 'w_est_mid', 'U').interp(obs_depth=z).values).ravel(),
-          np.asarray(hull['wU'].interp(obs_depth=z).values).ravel())
+          tflux('U', 'wU'))
     return {'w (m day$^{-1}$)': w, "$T'$ ($^\\circ$C)": Tp,
             "$w'T'$ (W m$^{-2}$)": wT, "$w'u'$ (m$^2$ s$^{-2}$)": wU}
 
 
-def _fit_samples_uv(diam, z, shape='symhex'):
+def _fit_samples_uv(diam, z, shape='symhex', truth='array'):
     """(array, truth) 1-D samples of u', v' and the lateral fluxes u'v', u'T', v'T'."""
     import run_transport as T
     arr = P.load_array(diam, shape); hull = P.load_hull(diam, shape)
-    cloud = P.load_cloud(diam, shape)
+    cloud = _truth_cloud(P.load_cloud(diam, shape), truth)
 
     def anom(ds, var):                                  # pooled temporal fluctuation
         a = (ds[var] - ds[var].mean('time')).interp(obs_depth=z)
         return np.asarray(a.values).ravel()
 
-    def latflux(a, b, key, scale=1.0):                  # array (platform a'b') vs hull truth
+    def latflux(a, b, key, scale=1.0):                  # array (platform a'b') vs truth
         ar = np.asarray(T.array_lat_flux(arr, a, b).interp(obs_depth=z).values).ravel()
-        tr = np.asarray(hull[key].interp(obs_depth=z).values).ravel()
+        if truth == 'array':
+            tr = np.asarray(hull[key].interp(obs_depth=z).values).ravel()
+        else:
+            tr = _cloud_flux(cloud, a, b, z)
         return (ar * scale, tr * scale)
 
     return {"$u'$ (m s$^{-1}$)": (anom(arr, 'U'), anom(cloud, 'U')),
@@ -295,52 +344,66 @@ def _shape_title(diam):
     return lambda s: f'{C.SHAPE_LABEL[s]} ({diam:g}$^\\circ$)'
 
 
-def fig_fit(out, z=DEPTH):
-    """Skew-normal fits to w, T', w'T', w'u' (rows), one column per diameter (30 m)."""
-    per_diam = {d: _fit_samples(d, z) for d in C.DIAMETERS}
-    return _fit_grid(out, per_diam, C.DIAMETERS, _diam_title, 'fit_distributions.png')
+def fig_fit(out, z=DEPTH, tag='30m', truth='array'):
+    """Skew-normal fits to w, T', w'T', w'u' (rows), one column per diameter."""
+    per_diam = {d: _fit_samples(d, z, truth=truth) for d in C.DIAMETERS}
+    return _fit_grid(out, per_diam, C.DIAMETERS, _diam_title, f'fit_distributions_{tag}.png')
 
 
-def fig_fit_uv(out, z=DEPTH):
+def fig_fit_uv(out, z=DEPTH, tag='30m', truth='array'):
     """Fits to u', v', u'v', u'T', v'T' (rows), one column per diameter.
 
     The oscillatory u'/v' rows get a bimodal (2-Gaussian) fit; the skewed flux rows
     keep the skew-normal.
     """
-    per_diam = {d: _fit_samples_uv(d, z) for d in C.DIAMETERS}
-    return _fit_grid(out, per_diam, C.DIAMETERS, _diam_title, 'fit_distributions_uv.png',
+    per_diam = {d: _fit_samples_uv(d, z, truth=truth) for d in C.DIAMETERS}
+    return _fit_grid(out, per_diam, C.DIAMETERS, _diam_title, f'fit_distributions_uv_{tag}.png',
                      bimodal_labels=UV_BIMODAL)
 
 
-def fig_fit_shapes(out, diam=FLAGSHIP, z=DEPTH):
+def fig_fit_shapes(out, diam=FLAGSHIP, z=DEPTH, tag='30m', truth='array'):
     """Cross-shape comparison of w, T', w'T', w'u' fits at fixed diameter.
 
     Columns = diamond / square / hexagon (all centred at 0degN,140degW); the equatorial
     regular arrays sampling the SAME nominal footprint.
     """
-    per_col = {s: _fit_samples(diam, z, s) for s in SHAPES}
+    per_col = {s: _fit_samples(diam, z, s, truth=truth) for s in SHAPES}
     return _fit_grid(out, per_col, SHAPES, _shape_title(diam),
-                     f'fit_distributions_shapes_d{diam:g}.png', col_colors=C.SHAPE_COLOR)
+                     f'fit_distributions_shapes_d{diam:g}_{tag}.png', col_colors=C.SHAPE_COLOR)
 
 
-def fig_fit_shapes_uv(out, diam=FLAGSHIP, z=DEPTH):
+def fig_fit_shapes_uv(out, diam=FLAGSHIP, z=DEPTH, tag='30m', truth='array'):
     """Cross-shape comparison of u', v', u'v', u'T', v'T' fits at fixed diameter."""
-    per_col = {s: _fit_samples_uv(diam, z, s) for s in SHAPES}
+    per_col = {s: _fit_samples_uv(diam, z, s, truth=truth) for s in SHAPES}
     return _fit_grid(out, per_col, SHAPES, _shape_title(diam),
-                     f'fit_distributions_shapes_uv_d{diam:g}.png', bimodal_labels=UV_BIMODAL,
+                     f'fit_distributions_shapes_uv_d{diam:g}_{tag}.png', bimodal_labels=UV_BIMODAL,
                      col_colors=C.SHAPE_COLOR)
 
 
+def render_all(out, truth):
+    """Every distribution figure for one truth definition, written under `out`."""
+    print(fig_pdf_panels(out, FLAGSHIP, DEPTH, truth=truth))
+    print(fig_pdf_panels(out, FLAGSHIP, None, truth=truth))
+    print(fig_js_summary(out, truth=truth))
+    print(fig_moment_recovery(out, truth=truth))
+    for z, tag in FIT_DEPTHS:                       # 30 m and (deepest layer) 80 m
+        print(fig_fit(out, z, tag, truth=truth))
+        print(fig_fit_uv(out, z, tag, truth=truth))
+        for d in SHAPE_DIAMS:                        # cross-shape comparison at 0.3 and 1.0
+            print(fig_fit_shapes(out, diam=d, z=z, tag=tag, truth=truth))
+            print(fig_fit_shapes_uv(out, diam=d, z=z, tag=tag, truth=truth))
+
+
+# truth definition -> output subfolder under distributions/
+TRUTHS = [('array', 'array_truth'), ('center', 'center_truth')]
+
+
 def main():
-    out = P.outdir(SUB)
-    print(fig_pdf_panels(out, FLAGSHIP, DEPTH))
-    print(fig_pdf_panels(out, FLAGSHIP, None))
-    print(fig_js_summary(out))
-    print(fig_moment_recovery(out))
-    print(fig_fit(out))
-    print(fig_fit_uv(out))
-    print(fig_fit_shapes(out))
-    print(fig_fit_shapes_uv(out))
+    base = P.outdir(SUB)
+    for truth, sub in TRUTHS:
+        out = os.path.join(base, sub)
+        os.makedirs(out, exist_ok=True)
+        render_all(out, truth)
 
 
 if __name__ == '__main__':

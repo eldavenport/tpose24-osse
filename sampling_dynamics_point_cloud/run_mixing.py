@@ -124,7 +124,7 @@ def fig_hovmoller(out, tlim=None):
     emax = float(np.nanpercentile(np.abs(np.concatenate(
         [np.abs(data[d]['err'].values).ravel() for d in C.DIAMETERS])), 99))
 
-    rows = [('model truth (hull)', 'truth', 'hbl_t'),
+    rows = [('model truth (disk)', 'truth', 'hbl_t'),
             ('array estimate', 'est', 'hbl_a'),
             ('estimate $-$ truth', 'err', None)]
     nc = len(C.DIAMETERS)

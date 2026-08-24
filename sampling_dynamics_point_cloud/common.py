@@ -51,7 +51,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 CONFIG_BASE = os.path.join(REPO, 'experiments', 'experiment_1', 'configs')
 CONFIG_DIR = os.path.join(CONFIG_BASE, 'symhex')      # default (symhex) family
-CACHE_DIR = os.path.join(HERE, 'cache')
+# heavy .nc caches live on /data (not /home); see project_sym_disk_truth memory
+CACHE_ROOT = '/data/SO3/edavenport/tpose24-osse/cache'
+CACHE_DIR = os.path.join(CACHE_ROOT, 'sampling_dynamics')
 
 RUN_DIR = '/data/SO3/edavenport/tpose24/oct2012_3mo_dt60_AB3'
 DELTA_T = 60.0
@@ -279,6 +281,18 @@ def select_hull(region, positions):
     lon = region.lon.values
     lat = region.lat.values
     inside = path.contains_points(np.column_stack([lon, lat]))
+    return region.isel(point=np.where(inside)[0])
+
+
+def select_disk(region, diam, center=CENTER):
+    """Subset a region_bbox point cloud to grid points inside the truth disk of radius
+    diam/2 about `center` (lat, lon). This is the circle the symmetric-shape vertices
+    lie on — the shape-independent truth footprint (matching osse_tools._disk_mask and
+    experiment_3's disk truth), replacing the convex-hull-of-the-polygon footprint."""
+    r = diam / 2.0
+    dlat = region.lat.values - center[0]
+    dlon = region.lon.values - center[1]
+    inside = (dlat ** 2 + dlon ** 2) <= r ** 2
     return region.isel(point=np.where(inside)[0])
 
 

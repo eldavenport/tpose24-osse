@@ -79,8 +79,9 @@ def compute_config(ds, region, diam, shape='symhex'):
     arr.to_netcdf(os.path.join(C.CACHE_DIR, f'{name}_array.nc'))
     sys.stderr.write(f'[{name}] wrote array.nc\n'); sys.stderr.flush()
 
-    # ---- truth: model grid points inside the hexagon hull ----
-    sel = C.select_hull(region, gliders)
+    # ---- truth: model grid points inside the truth disk (radius diam/2 about the
+    #      centre) — the circle the shape vertices lie on, shape-independent ----
+    sel = C.select_disk(region, diam)
     npts = sel.sizes['point']
     prof_vars = [v for v in ['U', 'V', 'T', 'S', 'W', 'nu', 'kappaT', 'N2', 'sigma0']
                  if v in sel]
