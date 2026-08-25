@@ -12,7 +12,8 @@ Per shape (distributions/<shape>/):
 
 Cross-shape (distributions/compare/):
   convergence.png                 JS(obs,truth) vs D, one line per SHAPE, for w and heat flux.
-  w_pdfs.png / heating_pdfs.png   truth + one fit per shape, one panel per D.
+  w_pdfs.png                      truth + one fit per shape, one panel per D.
+  heating_{horiz,vert,total}_pdfs.png  same, one figure per advective-heating component.
 """
 
 import os
@@ -48,13 +49,14 @@ def _face(ds, which, f, z):
 # ---------------------------------------------------------------- per-shape: w / hflux PDFs
 def fig_series_pdfs(out, shape, kind, z, unit, fname, scale=1.0):
     getter = _getter(kind)
-    fig, axes = plt.subplots(1, len(C.DIAMETERS), figsize=(15, 4), sharey=True)
+    fig, axes = plt.subplots(1, len(C.DIAMETERS), figsize=(15, 5), sharey=True)
     for ax, d in zip(np.ravel(axes), C.DIAMETERS):
         ds = P.load_ocv(d, shape)
         series = [('truth', getter(ds, 'true', z) * scale, TRUTH_COL),
                   ('array', getter(ds, 'obs', z) * scale, C.diam_color(d))]
         P.series_pdf_panel(ax, series, unit)
         ax.set_title(f'D = {d:g}$^\\circ$', color=C.diam_color(d))
+    P.raise_pdf_headroom(axes, n_series=2)
     axes[0].set_ylabel('probability density')
     fig.legend(handles=_STYLE, loc='upper center', ncol=2, frameon=False,
                bbox_to_anchor=(0.5, 1.10))
@@ -86,7 +88,7 @@ def fig_volmean(out, shape, z, tag):
     specs = [('T', '$^\\circ$C'), ('S', 'g kg$^{-1}$'),
              ('U', 'm s$^{-1}$'), ('V', 'm s$^{-1}$')]
     nrow, ncol = len(specs), len(C.DIAMETERS)
-    fig, axes = plt.subplots(nrow, ncol, figsize=(3.4 * ncol, 2.7 * nrow), squeeze=False)
+    fig, axes = plt.subplots(nrow, ncol, figsize=(3.4 * ncol, 3.2 * nrow), squeeze=False)
     for i, (v, unit) in enumerate(specs):
         for j, d in enumerate(C.DIAMETERS):
             ax = axes[i][j]
@@ -97,6 +99,7 @@ def fig_volmean(out, shape, z, tag):
             if i == 0:
                 ax.set_title(f'D = {d:g}$^\\circ$', color=C.diam_color(d))
         axes[i][0].set_ylabel(f'{v}  ({unit})')
+    P.raise_pdf_headroom(axes, n_series=2)
     fig.legend(handles=_STYLE, loc='upper center', ncol=2, frameon=False,
                bbox_to_anchor=(0.5, 1.01))
     fig.tight_layout(rect=(0, 0, 1, 0.98))
@@ -109,7 +112,7 @@ def fig_face_pdfs(out, shape, z, tag):
     nf = P.load_ocv(C.DIAMETERS[0], shape).sizes['face']
     ncol = len(C.DIAMETERS)
     unit = 'outward current (m s$^{-1}$)'
-    fig, axes = plt.subplots(nf, ncol, figsize=(3.4 * ncol, 2.5 * nf), squeeze=False)
+    fig, axes = plt.subplots(nf, ncol, figsize=(3.4 * ncol, 3.0 * nf), squeeze=False)
     for f in range(nf):
         for j, d in enumerate(C.DIAMETERS):
             ax = axes[f][j]
@@ -122,6 +125,7 @@ def fig_face_pdfs(out, shape, z, tag):
         b = np.degrees(np.arctan2(float(P.load_ocv(C.DIAMETERS[0], shape).face_lat.isel(face=f)),
                                   float(P.load_ocv(C.DIAMETERS[0], shape).face_lon.isel(face=f)) - 220))
         axes[f][0].set_ylabel(f'face {f}  ({b:+.0f}$^\\circ$)')
+    P.raise_pdf_headroom(axes, n_series=2)
     fig.legend(handles=_STYLE, loc='upper center', ncol=2, frameon=False,
                bbox_to_anchor=(0.5, 1.01))
     fig.tight_layout(rect=(0, 0, 1, 0.98))
@@ -148,17 +152,22 @@ def fig_convergence_compare(out, z=BASE):
 
 
 # ---------------------------------------------------------------- cross-shape: PDFs per D
-def fig_series_pdfs_compare(out, kind, z, unit, fname, scale=1.0):
-    getter = _getter(kind)
-    fig, axes = plt.subplots(1, len(C.DIAMETERS), figsize=(15, 4), sharey=True)
+def fig_series_pdfs_compare(out, kind, z, unit, fname, scale=1.0, comp='total'):
+    """Cross-shape temporal PDFs, one panel per D: pooled truth + one obs distribution per
+    shape. For kind='heat', `comp` selects the advective-heating component (horiz/vert/total)."""
+    def getter(ds, which):
+        return (P.heat_series(ds, which, z, comp) if kind == 'heat'
+                else _getter(kind)(ds, which, z))
+    fig, axes = plt.subplots(1, len(C.DIAMETERS), figsize=(15, 5), sharey=True)
     for ax, d in zip(np.ravel(axes), C.DIAMETERS):
         # truths across shapes nearly coincide -> pool into one reference distribution
-        pooled = np.concatenate([getter(P.load_ocv(d, s), 'true', z) for s in C.SHAPES]) * scale
+        pooled = np.concatenate([getter(P.load_ocv(d, s), 'true') for s in C.SHAPES]) * scale
         series = [('truth', pooled, TRUTH_COL)]
-        series += [(C.SHAPE_LABEL[s], getter(P.load_ocv(d, s), 'obs', z) * scale, C.SHAPE_COLOR[s])
+        series += [(C.SHAPE_LABEL[s], getter(P.load_ocv(d, s), 'obs') * scale, C.SHAPE_COLOR[s])
                    for s in C.SHAPES]
         P.series_pdf_panel(ax, series, unit)
         ax.set_title(f'D = {d:g}$^\\circ$')
+    P.raise_pdf_headroom(axes, n_series=1 + len(C.SHAPES))
     axes[0].set_ylabel('probability density')
     fig.legend(handles=_STYLE, loc='upper center', ncol=2, frameon=False,
                bbox_to_anchor=(0.5, 1.10))
@@ -178,8 +187,12 @@ def main():
     cmp = P.outdir('distributions', 'compare')
     fig_convergence_compare(cmp)
     fig_series_pdfs_compare(cmp, 'w', BASE, 'area-averaged w (m day$^{-1}$)', 'w_pdfs.png')
-    fig_series_pdfs_compare(cmp, 'heat', BASE,
-                            '$u\\cdot\\nabla T$ ($^\\circ$C day$^{-1}$)', 'heating_pdfs.png')
+    # advective-heating PDFs, one figure per component (horizontal / vertical / total)
+    for comp, sym, fn in [('horiz', 'u_h\\cdot\\nabla_h T', 'heating_horiz_pdfs.png'),
+                          ('vert', 'w\\,\\partial_z T', 'heating_vert_pdfs.png'),
+                          ('total', 'u\\cdot\\nabla T', 'heating_total_pdfs.png')]:
+        fig_series_pdfs_compare(cmp, 'heat', BASE,
+                                f'${sym}$ ($^\\circ$C day$^{{-1}}$)', fn, comp=comp)
     print('wrote distribution figures -> distributions/<shape>/ and distributions/compare/')
 
 

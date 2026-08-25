@@ -100,6 +100,29 @@ def adv_heating_da(ds, which, comp='total'):
     return adv_heating_vert_da(ds, which) + adv_heating_horiz_da(ds, which)
 
 
+def adv_heating_flux_da(ds, which, comp='total'):
+    """Advective heating expressed as a depth-cumulative heat FLUX [W/m^2]. Per the repo
+    convention (osse_tools.advective_heating) a heating RATE integrates vertically to a flux,
+    F(z) = rho0*cp * int_{top}^{z} (u.grad T) dz'. We undo the per-day scaling (-> degC/s),
+    multiply by HFLUX (rho0*cp) and cumulative-trapezoid down from the shallowest observed
+    depth (8 m). Sign follows the heating rate (positive = net warming of the column above z);
+    comp in {'vert','horiz','total'}."""
+    h = adv_heating_da(ds, which, comp).transpose('time', 'obs_depth') / SEC_PER_DAY  # degC/s
+    # keep the OBSERVED column only: the OCV-mean T (hence w.dT/dz, and its dT/dz stencil one
+    # point deeper) is undefined in the top ~8 m, so drop those near-surface NaN levels and
+    # integrate the flux cumulatively from the top of the observed column downward.
+    h = h.dropna('obs_depth', how='all')
+    z = h['obs_depth'].values                                # metres, negative downward
+    order = np.argsort(-z)                                    # shallow (near-surface) -> deep
+    zc, vals = z[order], h.values[:, order]                  # (time, nz) shallow->deep
+    zeta = -zc                                               # depth below surface, ascending
+    integ = np.zeros_like(vals)
+    integ[:, 1:] = np.cumsum(0.5 * (vals[:, 1:] + vals[:, :-1]) * np.diff(zeta), axis=1)
+    F = xr.DataArray(C.HFLUX * integ, dims=('time', 'obs_depth'),
+                     coords={'time': h['time'].values, 'obs_depth': zc})
+    return F.sortby('obs_depth')
+
+
 def dTdt_da(ds, which):
     """OCV volume-mean temperature tendency d<T>/dt [degC/day] (centred time difference)."""
     T = ds[f'Tbar_{which}']
@@ -142,12 +165,15 @@ def step_pdf(ax, x, edges, color, ls, lw=1.9):
     ax.plot(c, h, color=color, ls=ls, lw=lw)
 
 
-def common_edges(samples, nbins=34, pad=(0.5, 99.5)):
-    """Shared bin edges spanning several 1-D samples (percentile-clipped)."""
+def common_edges(samples, nbins=34, pad=(0.1, 99.9), margin=0.03):
+    """Shared bin edges spanning several 1-D samples. Clips only the extreme tails
+    (default 0.1/99.9 pct, ~1 outlier of a few hundred) then adds a small margin so the
+    histogram/fit tails don't run off the frame."""
     both = np.concatenate([np.asarray(s).ravel() for s in samples])
     both = both[np.isfinite(both)]
     lo, hi = np.nanpercentile(both, pad[0]), np.nanpercentile(both, pad[1])
-    return np.linspace(lo, hi, nbins)
+    span = hi - lo
+    return np.linspace(lo - margin * span, hi + margin * span, nbins)
 
 
 def overlay_pdf_panel(ax, series, unit, color_fn=C.diam_color):
@@ -207,7 +233,7 @@ def series_pdf_panel(ax, series, unit, nbins=36, box=True):
             ax.hist(s, bins=edges, density=True, color=color, alpha=0.45)  # grey shading
         else:
             h, _ = np.histogram(s, bins=edges, density=True)
-            ax.plot(centers, h, color=color, lw=2.0, ls='-')
+            ax.plot(centers, h, color=color, lw=1.0, ls='-', drawstyle='steps-mid')
         p = _skewfit_params(s)
         if p is not None:
             ax.plot(xg, skewnorm.pdf(xg, *p), color=color, lw=1.8, ls='--')
@@ -218,6 +244,17 @@ def series_pdf_panel(ax, series, unit, nbins=36, box=True):
         _param_box(ax, box_lines)
     ax.set_xlabel(unit)
     tidy_x(ax)
+
+
+def raise_pdf_headroom(axes, n_series):
+    """Add top headroom to PDF panels so the upper-left fit box clears the histogram peak.
+    Call AFTER all panels are drawn (autoscale settled). Scales with the number of stacked
+    text lines (one per series). Safe with sharey (all axes share the same top)."""
+    factor = 1.12 + 0.13 * n_series
+    axs = list(np.ravel(np.asarray(axes)))
+    tops = [ax.get_ylim()[1] for ax in axs]   # read all BEFORE modifying (sharey compounds)
+    for ax, top in zip(axs, tops):
+        ax.set_ylim(top=top * factor)
 
 
 def pdf_panel(ax, obs, truth, unit, nbins=36):

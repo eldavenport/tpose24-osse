@@ -26,6 +26,9 @@ HEAT_COMPS = [('horiz', 'horizontal  $u\\cdot\\nabla_h T$'),
               ('vert', 'vertical  $w\\,\\partial_z T$'),
               ('total', 'total  $u\\cdot\\nabla T$')]
 HEAT_UNIT = '$^\\circ$C day$^{-1}$'
+# W/m^2 variant: the heating RATE integrates vertically to a heat flux (rho0 cp int u.gradT dz,
+# cumulative from the 8 m top of the observed column) -- see cv_plot.adv_heating_flux_da.
+HEAT_FLUX_UNIT = 'W m$^{-2}$'
 
 
 def _profile(ds, var, which):
@@ -78,34 +81,40 @@ def fig_profiles_compare(out, var, scale, xlabel, fname):
     return P.finish(fig, os.path.join(out, fname))
 
 
-def _heat_prof(ds, which, comp):
-    m = P.adv_heating_da(ds, which, comp).mean('time')
+def _heat_prof(ds, which, comp, flux=False):
+    da = P.adv_heating_flux_da(ds, which, comp) if flux else P.adv_heating_da(ds, which, comp)
+    m = da.mean('time')
     return m.values, m['obs_depth'].values
 
 
-def fig_heating_profiles(out, shape):
+def fig_heating_profiles(out, shape, flux=False):
     """Per-shape: time-mean advective-heating profiles, one panel per component
-    (horizontal / vertical / total), all diameters overlaid (truth dotted, obs solid)."""
+    (horizontal / vertical / total), all diameters overlaid (truth dotted, obs solid).
+    flux=True -> the depth-cumulative heat flux [W/m^2] instead of the rate [degC/day]."""
+    unit = HEAT_FLUX_UNIT if flux else HEAT_UNIT
     fig, axes = plt.subplots(1, 3, figsize=(13.5, 6.2), sharey=True)
     for ax, (comp, title) in zip(axes, HEAT_COMPS):
         for d in C.DIAMETERS:
             ds = P.load_ocv(d, shape)
-            vt, z = _heat_prof(ds, 'true', comp)
-            vo, _ = _heat_prof(ds, 'obs', comp)
+            vt, z = _heat_prof(ds, 'true', comp, flux)
+            vo, _ = _heat_prof(ds, 'obs', comp, flux)
             ax.plot(vt, z, color=C.diam_color(d), **P.TRUTH_KW)
             ax.plot(vo, z, color=C.diam_color(d), **P.OBS_KW)
         ax.axvline(0, color='0.7', lw=1)
         ax.set_title(title)
-        ax.set_xlabel(HEAT_UNIT)
+        ax.set_xlabel(unit)
         P.tidy_x(ax, 4)
     axes[0].set_ylabel('depth (m)')
     P.top_legend(fig, diam=True, method=True, y=1.05)
-    return P.finish(fig, os.path.join(out, 'heating_profiles.png'))
+    fname = 'heating_profiles_wm2.png' if flux else 'heating_profiles.png'
+    return P.finish(fig, os.path.join(out, fname))
 
 
-def fig_heating_profiles_compare(out):
+def fig_heating_profiles_compare(out, flux=False):
     """Cross-shape: advective-heating profiles, rows = component (horizontal / vertical /
-    total), cols = diameter; the three shapes overlaid (truth dotted, obs solid)."""
+    total), cols = diameter; the three shapes overlaid (truth dotted, obs solid).
+    flux=True -> the depth-cumulative heat flux [W/m^2] instead of the rate [degC/day]."""
+    unit = HEAT_FLUX_UNIT if flux else HEAT_UNIT
     short = {'horiz': 'horizontal', 'vert': 'vertical', 'total': 'total'}
     nr, nc = len(HEAT_COMPS), len(C.DIAMETERS)
     fig, axes = plt.subplots(nr, nc, figsize=(3.6 * nc, 4.0 * nr), sharey=True)
@@ -114,8 +123,8 @@ def fig_heating_profiles_compare(out):
             ax = axes[r][cidx]
             for shape in C.SHAPES:
                 ds = P.load_ocv(d, shape)
-                vt, z = _heat_prof(ds, 'true', comp)
-                vo, _ = _heat_prof(ds, 'obs', comp)
+                vt, z = _heat_prof(ds, 'true', comp, flux)
+                vo, _ = _heat_prof(ds, 'obs', comp, flux)
                 ax.plot(vt, z, color=C.SHAPE_COLOR[shape], **P.TRUTH_KW)
                 ax.plot(vo, z, color=C.SHAPE_COLOR[shape], **P.OBS_KW)
             ax.axvline(0, color='0.7', lw=1)
@@ -123,10 +132,11 @@ def fig_heating_profiles_compare(out):
             if r == 0:
                 ax.set_title(f'D = {d:g}$^\\circ$')
             if r == nr - 1:
-                ax.set_xlabel(HEAT_UNIT)
+                ax.set_xlabel(unit)
         axes[r][0].set_ylabel(f'{short[comp]}\ndepth (m)')
     P.shape_top_legend(fig, method=True, y=1.02)
-    return P.finish(fig, os.path.join(out, 'heating_profiles.png'))
+    fname = 'heating_profiles_wm2.png' if flux else 'heating_profiles.png'
+    return P.finish(fig, os.path.join(out, fname))
 
 
 def fig_budget_closure(out, shape):
@@ -203,12 +213,14 @@ def main():
         out = P.outdir('budget', shape)
         fig_profiles(out, shape, 'w', C.SEC_PER_DAY, 'area-averaged w (m day$^{-1}$)',
                      'w_profiles.png')
-        fig_heating_profiles(out, shape)
+        fig_heating_profiles(out, shape)                 # degC/day
+        fig_heating_profiles(out, shape, flux=True)      # W/m^2 (depth-cumulative)
         fig_budget_closure(out, shape)
     cmp = P.outdir('budget', 'compare')
     fig_profiles_compare(cmp, 'w', C.SEC_PER_DAY, 'area-averaged w (m day$^{-1}$)',
                          'w_profiles.png')
-    fig_heating_profiles_compare(cmp)
+    fig_heating_profiles_compare(cmp)                    # degC/day
+    fig_heating_profiles_compare(cmp, flux=True)         # W/m^2 (depth-cumulative)
     fig_budget_error_compare(cmp)
     print('wrote budget figures -> budget/<shape>/ and budget/compare/')
 
