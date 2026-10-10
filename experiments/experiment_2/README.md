@@ -199,6 +199,26 @@ also stores the eddy flux `w'T'`, but the summary figures focus on advective hea
    alone suffices — no model re-read). (The symdia/symsq families are not in the gradient-map
    `SCOPE`.)
 
+## Individual-gradient skill — does the hexagon win on du/dx and dv/dy, or just δ?
+
+`python run_gradient_skill.py [compute|plot|all]` — plane-fit SKILL for the
+**individual** gradients ∂u/∂x and ∂v/∂y (not only their sum, the divergence δ),
+across the symmetric regular-shape sweep (symhex/symdia/symsq). The estimate is the
+plane-fit slopes `compute_w_planefit` reports (now returned as `du_dx`,`dv_dy`); the
+truth is the footprint area-mean of the model's true ∂u/∂x,∂v/∂y
+(`osse_tools.model_gradient_components`, same C-grid flux form as `model_divergence`,
+disk truth). COMPUTE reads the model once → `data_grad_skill/<cfg>__cell_<c>.nc`
+(du_dx/dv_dy/div est+true on dim `depth`) + a LONG `metrics.csv` (one row per
+cell×quantity, standard `w_skill_metrics` columns). PLOT →
+`summary_figs/gradient_sweep/`: `fig_sym_shape_gradient_skill_c<lat>.png` (shape
+comparison — the headline), `fig_<fam>_gradient_skill.png` (per family vs diameter),
+and `fig_sym_gradient_scatter_deepest.png` (time-mean est-vs-true at the deepest level,
+rows = ∂u/∂x, ∂v/∂y, δ; cols = shapes — the gradient analogue of `fig_sym_w_scatter_deepest`),
+each 4 rows × 3 cols (cols = ∂u/∂x, ∂v/∂y, δ; rows = mean est/true, **signed bias
+est−true**, RMS/σ, correlation; gradients in day⁻¹). Result: the hexagon has the
+lowest relative error and highest correlation in **both** gradients individually at
+every diameter/centre — its δ advantage is not from compensating du/dx and dv/dy errors.
+
 ## Sub-array-scale flux maps
 
 10. `python run_subarray_flux_maps.py [compute|plot|all]` — 2-D maps over the equatorial
